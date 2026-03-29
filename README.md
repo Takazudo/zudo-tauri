@@ -18,7 +18,6 @@ Written for personal reference and AI-assisted coding.
 
 ```bash
 pnpm install
-cd doc && pnpm install
 pnpm dev        # http://localhost:4819/pj/zudo-tauri/
 pnpm build
 pnpm b4push     # pre-push validation

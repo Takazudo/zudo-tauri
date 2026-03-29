@@ -1,21 +1,46 @@
 {
   "name": "takazudo-zudo-tauri",
+  "version": "0.0.1",
   "private": true,
+  "type": "module",
   "scripts": {
     "// ── Doc site ────────────────────────────────────": "",
     "predev": "lsof -ti :4819 | xargs kill 2>/dev/null; true",
-    "dev": "pnpm --dir doc dev",
-    "build": "pnpm --dir doc build",
-    "preview": "pnpm --dir doc preview",
-    "check": "pnpm --dir doc check",
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "check": "astro check",
     "// ── Code quality ────────────────────────────────": "",
-    "format:md": "pnpm dlx @takazudo/mdx-formatter --write 'doc/src/content/**/*.{md,mdx}'",
-    "format:md:check": "pnpm dlx @takazudo/mdx-formatter --check 'doc/src/content/**/*.{md,mdx}'",
+    "format:md": "pnpm dlx @takazudo/mdx-formatter --write 'src/content/**/*.{md,mdx}'",
+    "format:md:check": "pnpm dlx @takazudo/mdx-formatter --check 'src/content/**/*.{md,mdx}'",
     "// ── Validation ──────────────────────────────────": "",
     "b4push": "bash scripts/run-b4push.sh"
   },
+  "dependencies": {
+    "@astrojs/mdx": "^4.3.0",
+    "@astrojs/react": "^4.4.0",
+    "@shikijs/transformers": "^4.0.0",
+    "astro": "^5.18.0",
+    "clsx": "^2.1.0",
+    "github-slugger": "^2.0.0",
+    "gray-matter": "^4.0.0",
+    "mermaid": "^11.13.0",
+    "minisearch": "^7.2.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "remark-directive": "^3.0.0",
+    "shiki": "^4.0.2",
+    "unist-util-visit": "^5.1.0"
+  },
   "devDependencies": {
-    "lefthook": "^1.11.0"
+    "@astrojs/check": "^0.9.0",
+    "@tailwindcss/vite": "^4.2.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.0",
+    "lefthook": "^1.11.0",
+    "pagefind": "^1.4.0",
+    "tailwindcss": "^4.2.0",
+    "typescript": "^5.9.0"
   },
   "engines": {
     "node": ">=20.0"
@@ -23,7 +48,9 @@
   "packageManager": "pnpm@10.6.5",
   "pnpm": {
     "onlyBuiltDependencies": [
-      "lefthook"
+      "esbuild",
+      "lefthook",
+      "sharp"
     ]
   }
 }

@@ -60,5 +60,6 @@ export const settings = {
     { label: "Dev Server", path: "/docs/dev-server", categoryMatch: "dev-server" },
     { label: "Deployment", path: "/docs/deployment", categoryMatch: "deployment" },
     { label: "Recipes", path: "/docs/recipes", categoryMatch: "recipes" },
+    { label: "Claude", path: "/docs/claude", categoryMatch: "claude" },
   ] satisfies HeaderNavItem[],
 };
