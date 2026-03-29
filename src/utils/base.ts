@@ -1,6 +1,9 @@
 import { settings } from "@/config/settings";
 import { defaultLocale, locales, getLocaleLabel, type Locale } from "@/config/i18n";
 import type { LocaleLink } from "@/types/locale";
+import { isExternal } from "@/plugins/url-utils";
+
+export { isExternal };
 
 /** Normalized base path with no trailing slash (empty string when "/"). */
 export const normalizedBase = settings.base.replace(/\/+$/, "");
@@ -46,11 +49,6 @@ export function stripBase(path: string): string {
 export function docsUrl(slug: string, lang: Locale = defaultLocale): string {
   const path = lang === defaultLocale ? `/docs/${slug}` : `/${lang}/docs/${slug}`;
   return withBase(path);
-}
-
-/** Check if a URL is external (starts with http:// or https://). */
-export function isExternal(href: string): boolean {
-  return href.startsWith("http://") || href.startsWith("https://");
 }
 
 /** Resolve a href: external URLs pass through, internal ones get the base prefix. */
