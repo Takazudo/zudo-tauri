@@ -10,6 +10,8 @@
     "build": "astro build",
     "preview": "astro preview",
     "check": "astro check",
+    "// ── Skill ───────────────────────────────────────": "",
+    "setup:doc-skill": "bash scripts/setup-doc-skill.sh",
     "// ── Code quality ────────────────────────────────": "",
     "format:md": "pnpm dlx @takazudo/mdx-formatter --write 'src/content/**/*.{md,mdx}'",
     "format:md:check": "pnpm dlx @takazudo/mdx-formatter --check 'src/content/**/*.{md,mdx}'",
