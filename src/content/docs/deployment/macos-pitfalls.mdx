@@ -58,15 +58,23 @@ killall MyApp 2>/dev/null || true
 # 2. Wait briefly for process to exit
 sleep 1
 
-# 3. Remove the old bundle completely
-rm -rf /Applications/MyApp.app
+# 3. Move old bundle away (not rm -- mv is atomic via rename())
+mv /Applications/MyApp.app /tmp/MyApp-old-$$.app 2>/dev/null || true
 
 # 4. Copy the fresh bundle
-cp -r target/release/bundle/macos/MyApp.app /Applications/
+cp -R target/release/bundle/macos/MyApp.app /Applications/
 
-# 5. Clear quarantine
-xattr -cr /Applications/MyApp.app
+# 5. Clear quarantine (targeted: only removes quarantine, not all xattrs)
+xattr -dr com.apple.quarantine /Applications/MyApp.app
 ```
+
+<Note>
+
+Step 3 uses `mv` instead of `rm -rf`. On the same filesystem, `mv` calls `rename()` which is atomic -- the old bundle disappears in one operation with no partial state. Using `rm -rf` can leave a partially-deleted bundle if interrupted.
+
+Step 5 uses `xattr -dr com.apple.quarantine` instead of `xattr -cr`. The `-dr` flag removes only the quarantine attribute recursively, while `-cr` removes all extended attributes. For local development, the targeted approach is safer.
+
+</Note>
 
 ### Verify the Binary is Fresh
 
@@ -92,9 +100,9 @@ install-tauri() {
   local app_name="${1:?Usage: install-tauri AppName}"
   killall "$app_name" 2>/dev/null || true
   sleep 1
-  rm -rf "/Applications/${app_name}.app"
-  cp -r "target/release/bundle/macos/${app_name}.app" /Applications/
-  xattr -cr "/Applications/${app_name}.app"
+  mv "/Applications/${app_name}.app" "/tmp/${app_name}-old-$$.app" 2>/dev/null || true
+  cp -R "target/release/bundle/macos/${app_name}.app" /Applications/
+  xattr -dr com.apple.quarantine "/Applications/${app_name}.app"
   echo "Installed ${app_name}.app"
 }
 ```
@@ -112,6 +120,45 @@ Clearing the quarantine attribute with `xattr -cr` prevents this:
 ```bash
 xattr -cr /Applications/MyApp.app
 ```
+
+### Launch Services Cache
+
+macOS maintains a database (Launch Services) that tracks app registrations, document types, URL handlers, and icons. When you replace a `.app` bundle at the same path, Launch Services may still show stale metadata (old icon, old document type associations) because it only re-registers automatically if the app's modification time is newer.
+
+If Finder shows stale app info after a correct install:
+
+```bash
+# Force re-register the app
+touch /Applications/MyApp.app
+/System/Library/Frameworks/CoreServices.framework/Frameworks/\
+LaunchServices.framework/Support/lsregister -f /Applications/MyApp.app
+
+# Nuclear option: rebuild the entire Launch Services database
+/System/Library/Frameworks/CoreServices.framework/Frameworks/\
+LaunchServices.framework/Support/lsregister \
+  -kill -r -domain local -domain system -domain user
+killall Finder
+```
+
+<Note>
+
+The full database rebuild is rarely needed. Try the targeted `lsregister -f` first. The nuclear `lsregister -kill -r` resets all app registrations system-wide and can take a while to rebuild.
+
+</Note>
+
+### Code Signature Verification
+
+After replacing a `.app` bundle, you can verify the code signature is valid:
+
+```bash
+# Verify code signature
+codesign --verify --deep --strict --verbose=2 /Applications/MyApp.app
+
+# Check Gatekeeper assessment (bypassing cache to get fresh result)
+spctl --assess --type execute --verbose --ignore-cache /Applications/MyApp.app
+```
+
+If `spctl` gives inconsistent results without `--ignore-cache`, the Gatekeeper assessment cache is stale. The `--ignore-cache` flag forces a fresh assessment.
 
 ### Gatekeeper Warnings
 
@@ -137,8 +184,9 @@ xattr -cr /Applications/MyApp.app
 
 Before reporting "my changes are not showing up":
 
-1. Did you `rm -rf` the old `.app` before copying? (Not `cp -rf`)
+1. Did you `mv` or `rm -rf` the old `.app` before copying? (Not `cp -rf`)
 2. Did you `killall` the running app first?
 3. Do the binary timestamps match between source and installed?
-4. Did you clear quarantine with `xattr -cr`?
+4. Did you clear quarantine with `xattr -dr com.apple.quarantine`?
 5. Did you verify the frontend assets are actually embedded? (See [Cargo Cache](./cargo-cache))
+6. Is Finder showing stale info? Try `lsregister -f` to re-register the app

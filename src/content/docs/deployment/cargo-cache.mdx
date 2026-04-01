@@ -25,6 +25,27 @@ graph TD
 
 ## Solutions
 
+### build.rs rerun-if-changed (Root Cause Fix)
+
+The best solution is to tell Cargo to watch your frontend output directory in `build.rs`. This makes Cargo automatically detect frontend changes without any manual intervention:
+
+```rust
+// src-tauri/build.rs
+fn main() {
+    // Watch the frontend dist directory for changes
+    println!("cargo:rerun-if-changed=../dist");
+    tauri_build::build()
+}
+```
+
+Adjust the path (`../dist`, `../dist-renderer`, etc.) to match your actual `frontendDist` directory relative to `src-tauri/`. After this, `cargo tauri build` will always detect frontend changes and re-embed the latest assets.
+
+<Tip>
+
+This is the only solution that fixes the root cause. All other solutions below are workarounds that require manual action before each build. If you add `rerun-if-changed` to `build.rs`, you can skip the rest of this section.
+
+</Tip>
+
 ### touch src/main.rs
 
 The classic workaround is to touch a Rust source file to force Cargo to recompile:
