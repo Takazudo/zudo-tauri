@@ -25,6 +25,27 @@ graph TD
 
 ## 解決策
 
+### build.rs の rerun-if-changed（根本原因の修正）
+
+最善の解決策は、`build.rs` で Cargo にフロントエンド出力ディレクトリを監視するよう指示することである。これにより、手動の介入なしに Cargo が自動的にフロントエンドの変更を検出する：
+
+```rust
+// src-tauri/build.rs
+fn main() {
+    // Watch the frontend dist directory for changes
+    println!("cargo:rerun-if-changed=../dist");
+    tauri_build::build()
+}
+```
+
+パス（`../dist`、`../dist-renderer` など）は `src-tauri/` からの相対パスで、実際の `frontendDist` ディレクトリに合わせて調整すること。これにより、`cargo tauri build` は常にフロントエンドの変更を検出し、最新のアセットを再埋め込みする。
+
+<Tip>
+
+これは根本原因を修正する唯一の解決策である。以下の他の解決策はすべて、各ビルドの前に手動操作が必要な回避策である。`build.rs` に `rerun-if-changed` を追加すれば、以降のセクションはスキップできる。
+
+</Tip>
+
 ### touch src/main.rs
 
 古典的な回避策は、Rust ソースファイルを touch して Cargo に再コンパイルを強制することである。
