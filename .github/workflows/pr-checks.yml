@@ -126,7 +126,7 @@ jobs:
             --commit-hash="${GITHUB_SHA}" \
             --commit-message="Preview: PR #${PR_NUMBER}"
 
-          DEPLOY_URL="https://pr-${PR_NUMBER}.zudo-tauri.pages.dev"
+          DEPLOY_URL="https://pr-${PR_NUMBER}.takazudo-zudo-tauri.pages.dev"
           echo "deploy_url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
           echo "Preview URL: $DEPLOY_URL"
         env:
