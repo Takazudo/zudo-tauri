@@ -200,6 +200,37 @@ For macOS desktop-specific behavior, there is currently no full automated substi
 
 </Warning>
 
+## Practical patterns from real projects
+
+### Standalone core crate for testable Rust logic
+
+A powerful pattern is to extract business logic into a standalone Rust crate **without Tauri dependencies**. This means Rust unit tests can run on any platform (CI Linux runners, WSL2) without needing a GUI environment or platform-specific WebView libraries.
+
+```
+tauri-app/
+  src/         # Tauri-specific wiring (commands, state, app setup)
+  core/        # Standalone crate — pure Rust, no Tauri deps
+    src/
+      helpers/
+      settings.rs
+      messages.rs
+    Cargo.toml  # Only serde, chrono, etc. — no tauri dependency
+```
+
+The core crate uses standard `#[cfg(test)]` inline test modules and can be tested with `cargo test` anywhere. The Tauri-specific layer is kept thin — just IPC command wrappers that delegate to the core.
+
+### REST API smoke tests as macOS automation workaround
+
+If your Tauri app exposes a REST API (e.g., via a sidecar or embedded HTTP server), you can partially automate macOS desktop testing by scripting the real app lifecycle:
+
+1. Launch the `.app` bundle via AppleScript
+2. Wait for the REST API to become reachable
+3. Run HTTP-based smoke tests against the live app
+4. Quit the app via AppleScript
+5. Verify clean shutdown (port freed, no orphaned processes)
+
+This does not replace visual testing, but it validates that the backend is functional inside the real macOS app bundle — catching deployment issues like stale binaries, missing resources, or broken IPC wiring.
+
 ## Key takeaways
 
 1. **Tauri v2 does not run the same rendering engine on every platform** -- Chromium on Windows, WebKit on macOS/Linux
