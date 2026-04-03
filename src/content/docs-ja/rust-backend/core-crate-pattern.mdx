@@ -1,0 +1,261 @@
+---
+title: コアクレートテストパターン
+description: Tauri 依存のない独立した Rust クレートにビジネスロジックを抽出し、クロスプラットフォームテストを可能にするパターン
+sidebar_position: 7
+---
+
+# コアクレートテストパターン
+
+Tauri コマンドは Tauri のランタイム（アプリハンドル、ウィンドウ、ステート管理）に依存し、それがさらにプラットフォーム固有の GUI ライブラリ（Linux の GTK、macOS の Cocoa）に依存する。これにより、ヘッドレス CI ランナー、WSL2、ディスプレイサーバーのない環境では `cargo test` が実行不可能になる。
+
+解決策は、純粋なビジネスロジックを Tauri 依存ゼロの独立した `core` クレートに抽出することである。
+
+## 問題
+
+典型的な Tauri コマンドハンドラは以下のようになる。
+
+```rust
+#[tauri::command]
+fn settings_get(state: State<'_, AppState>) -> Option<serde_json::Value> {
+    let root = state.project_root.lock().unwrap();
+    let path = Path::new(&*root).join(".zudotext.settings.json");
+    let content = fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+```
+
+ビジネスロジック（ファイル読み取り、JSON パース）はシンプルだが、関数シグネチャが `tauri::State` に紐付いている。動作中の Tauri アプリなしにはこの関数を呼び出せない。
+
+## コアクレートの構造
+
+`zudotext-core` クレートは Tauri 型なしでビジネスロジックをミラーする。
+
+```
+tauri-app/
+  core/                      # zudotext-core クレート
+    Cargo.toml
+    src/
+      lib.rs                 # モジュール宣言
+      settings.rs            # 設定の読み書き
+      drafts.rs              # 下書き管理
+      messages.rs            # メッセージ CRUD
+      pins.rs                # ピンディレクトリ操作
+      assets.rs              # アセットファイル管理
+      draft.rs               # 単一下書き操作
+      workspace_registry.rs  # マルチワークスペース管理
+      helpers/               # 共有ユーティリティ
+  src/                       # Tauri クレート（core に依存）
+    main.rs
+    commands/                # Tauri コマンドハンドラ（薄いラッパー）
+    state.rs
+```
+
+### コアクレートの依存関係
+
+コアクレートは標準的なエコシステムクレートにのみ依存する。
+
+```toml
+[package]
+name = "zudotext-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+dirs = "5"
+base64 = "0.22"
+trash = "5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+font-kit = "0.14"
+
+[dev-dependencies]
+tempfile = "3"
+```
+
+<Note>
+
+このクレートには `tauri` 依存が一切ない。`font-kit` 依存はシステムフォント列挙のために macOS でのみ条件付きコンパイルされるが、GUI ライブラリは引き込まない。
+
+</Note>
+
+## パスパラメータを受け取る純粋関数
+
+キーパターンは `State<'_, AppState>` をプレーンな `&str` プロジェクトルートパラメータに置き換えることである。
+
+**コアクレート**（純粋ロジック）:
+
+```rust
+// core/src/settings.rs
+
+pub fn settings_get(project_root: &str) -> Option<serde_json::Value> {
+    if project_root.is_empty() {
+        return None;
+    }
+    let settings_path = Path::new(project_root).join(".zudotext.settings.json");
+    let content = fs::read_to_string(&settings_path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+pub fn settings_save(project_root: &str, settings: &serde_json::Value) -> bool {
+    if project_root.is_empty() {
+        return false;
+    }
+    if !settings.is_object() {
+        return false;
+    }
+    let settings_path = Path::new(project_root).join(".zudotext.settings.json");
+    match serde_json::to_string_pretty(settings) {
+        Ok(json) => fs::write(&settings_path, json).is_ok(),
+        Err(_) => false,
+    }
+}
+```
+
+**Tauri クレート**（薄いラッパー）:
+
+```rust
+// src/commands/settings.rs
+
+#[tauri::command]
+fn settings_get(state: State<'_, AppState>) -> Option<serde_json::Value> {
+    let root = state.project_root.lock().unwrap();
+    zudotext_core::settings::settings_get(&root)
+}
+```
+
+Tauri コマンドハンドラはステートからプロジェクトルートを抽出してコア関数に委譲するだけである。
+
+## `tempfile` によるテスト
+
+コア関数がパス文字列を受け取るため、テストは既知の内容で一時ディレクトリを作成する。
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_settings_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let settings = json!({
+            "theme": "dark",
+            "draftCount": 5,
+            "activeDraft": 2,
+            "pins": [{"path": "docs", "title": "Docs"}]
+        });
+
+        assert!(settings_save(root, &settings));
+        let loaded = settings_get(root).unwrap();
+        assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn test_settings_get_returns_none_for_empty_root() {
+        assert_eq!(settings_get(""), None);
+    }
+
+    #[test]
+    fn test_settings_save_rejects_non_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+
+        assert!(!settings_save(root, &json!("string")));
+        assert!(!settings_save(root, &json!(42)));
+        assert!(!settings_save(root, &json!([1, 2, 3])));
+    }
+}
+```
+
+これらのテストはシンプルな `cargo test` で実行できる。ディスプレイサーバーも、Tauri ランタイムも、GTK も不要。
+
+## より複雑な例：下書き管理
+
+下書きモジュールは、より複雑なビジネスロジックでこのパターンを示す。下書きファイルはディスク上に `inbox/draft1.md`、`inbox/draft2.md` として存在する。
+
+```rust
+// core/src/drafts.rs
+
+pub fn discover_draft_count(project_root: &str) -> u32 {
+    let inbox = Path::new(project_root).join("inbox");
+    let mut max: u32 = 0;
+    if let Ok(entries) = fs::read_dir(&inbox) {
+        for entry in entries.flatten() {
+            if let Some(n) = parse_draft_number(entry.file_name().to_str().unwrap_or("")) {
+                if n > max { max = n; }
+            }
+        }
+    }
+    if max == 0 { 1 } else { max }
+}
+
+pub fn drafts_tidy_up(project_root: &str) -> Option<TidyUpResult> {
+    // Collect non-empty drafts, compact gaps, remove trailing files
+    // ...complex logic with disk I/O...
+}
+```
+
+テストはリアルなディレクトリ構造を作成する。
+
+```rust
+#[test]
+fn test_drafts_tidy_up_compacts_gaps() {
+    let dir = setup_project(json!({"activeDraft": 4}));
+    let root = dir.path().to_str().unwrap();
+
+    let inbox = dir.path().join("inbox");
+    fs::create_dir_all(&inbox).unwrap();
+    fs::write(inbox.join("draft1.md"), "Draft 1").unwrap();
+    fs::write(inbox.join("draft2.md"), "").unwrap();       // 空
+    fs::write(inbox.join("draft3.md"), "  \n  ").unwrap(); // 空白のみ
+    fs::write(inbox.join("draft4.md"), "Draft 4").unwrap();
+
+    let result = drafts_tidy_up(root).unwrap();
+    assert_eq!(result.new_count, 2);
+    assert_eq!(result.new_active, 2); // draft4 がポジション 2 に移動
+}
+```
+
+## テストの実行
+
+```bash
+# すべてのコアクレートテストを実行（どのプラットフォームでも動作）
+cd tauri-app/core && cargo test
+
+# デバッグ用に出力付きで実行
+cd tauri-app/core && cargo test -- --nocapture
+```
+
+これは以下の環境で動作する。
+
+- macOS（開発マシン）
+- WSL2（ディスプレイサーバーなし）
+- GitHub Actions ヘッドレスランナー（GTK なし）
+- 任意の Linux サーバー
+
+## このパターンを使うべき場面
+
+<Warning>
+
+すべての Tauri コマンドロジックをコアクレートに移すべきではない。以下の場合は Tauri クレートに保持する。
+
+- アプリハンドルが必要（例：ウィンドウ管理、メニュー作成）
+- Tauri プラグインが必要（例：ネイティブダイアログ、システムトレイ）
+- Tauri 固有のステートを管理（例：ウォッチャーハンドル、PTY プロセス参照）
+
+</Warning>
+
+以下の場合はコアクレートに移す。
+
+- プロジェクトルートパスに基づいてファイルを読み書きする
+- データ構造（設定、フロントマター）をパースまたはバリデーションする
+- Tauri API を必要としないビジネスロジックを実行する
+- プラットフォーム依存なしの CI でのテストが有益
+
+## まとめ
+
+パターンはシンプルである。**Tauri ステートの代わりにパスパラメータを受け取り、そのパスに対してファイル I/O を行い、テストでは `tempfile` を使う。** Tauri コマンドハンドラは、ステートからパスを抽出してコア関数を呼び出す1行の委譲になる。この分離はテスト速度と CI 互換性において即座に効果を発揮する。

@@ -1,0 +1,217 @@
+---
+title: アプリ生成システム
+description: 同一コードベースから異なる Tauri アプリインスタンスを生成するコンフィグ駆動ジェネレーター
+sidebar_position: 6
+---
+
+# アプリ生成システム
+
+zudo-text リポジトリは単一のアプリではなく、**アプリジェネレーター**である。同じ Rust バックエンドと React フロントエンドが、設定に応じて異なるアプリインスタンスを生成する。各インスタンスは独自の名前、バンドル識別子、ワークスペースディレクトリ、設定を持つ。
+
+## コンセプト
+
+「アプリインスタンス」は3つのものによって定義される。
+
+1. **Tauri 設定オーバーライド** -- `tauri.conf.<name>.json` が `productName` と `identifier` をオーバーライド
+2. **ランタイム設定** -- `~/.config/zudotext/<name>/config.json` がワークスペースディレクトリを指す
+3. **ワークスペース** -- 下書き、アーカイブ、ピン、`.zudotext.settings.json` を含むディレクトリ
+
+ジェネレーターは単一のコマンドで3つすべてを作成する。
+
+```bash
+pnpm generate <app-name> <workspace-path> [options]
+```
+
+## 使い方
+
+```bash
+# 設定のみ生成（ビルドなし）
+pnpm generate ztoffice ~/Documents/office-notes
+
+# 生成 + .app バンドルのビルド
+pnpm generate ztoffice ~/Documents/office-notes --build
+
+# 生成 + ビルド + /Applications にインストール
+pnpm generate ztoffice ~/Documents/office-notes --install
+
+# ワークスペースのスキャフォールドをスキップ（ディレクトリは既に存在）
+pnpm generate ztoffice ~/Documents/office-notes --skip-scaffold --install
+
+# 特定のスキャフォールドプリセットを使用
+pnpm generate ztoffice ~/Documents/office-notes --preset full
+```
+
+## ジェネレーターの処理内容
+
+### ステップ 1: ワークスペースのスキャフォールド
+
+`--skip-scaffold` が指定されない限り、ジェネレーターは必要な構造を持つワークスペースディレクトリを作成する。
+
+```
+~/Documents/office-notes/
+  .zudotext.settings.json    # アプリ設定（バリデート済みデフォルト + オーバーライド）
+  inbox/                     # 下書きファイル（draft1.md, draft2.md, ...）
+  assets/                    # 画像とファイルアセット
+  pins/                      # デフォルトピンディレクトリ
+  archives/                  # アーカイブ済みメッセージ（プリセットに基づきオプション）
+```
+
+スキャフォールドはプリセット（minimal, standard, full）を使用し、作成するディレクトリとテンプレートファイルを決定する。
+
+```ts
+const standard: PresetConfig = {
+  templateDir: path.join(presetsDir, "standard", "template"),
+  pins: [
+    { path: ".claude/skills", title: "Skills" },
+  ],
+};
+
+const full: PresetConfig = {
+  templateDir: path.join(presetsDir, "full", "template"),
+  pins: [
+    { path: ".claude/skills", title: "Skills" },
+    { path: "pins/notes", title: "Notes" },
+  ],
+};
+```
+
+設定ファイルは、プリセットのデフォルトと `validateSettings()` をマージして生成され、すべての必須フィールドが存在することを保証する。
+
+```ts
+const raw = {
+  ...defaultSettings,
+  ...userSettings,
+  general: {
+    ...defaultSettings.general,
+    ...(userSettings.general ?? {}),
+    projectRoot: targetDir,
+  },
+  pins: pinConfigs.length > 0 ? pinConfigs : defaultSettings.pins,
+};
+const mergedSettings = validateSettings(raw) ?? defaultSettings;
+```
+
+### ステップ 2: Tauri 設定オーバーライドの作成
+
+ジェネレーターは異なる部分のみをオーバーライドする最小限の JSON ファイルを作成する。
+
+```ts
+const tauriConf = {
+  productName: appName,
+  identifier: `com.takazudo.${appName}`,
+};
+fs.writeFileSync(tauriConfPath, JSON.stringify(tauriConf, null, 2) + "\n");
+```
+
+これは `tauri-app/tauri.conf.ztoffice.json` を生成する：
+
+```json
+{
+  "productName": "ztoffice",
+  "identifier": "com.takazudo.ztoffice"
+}
+```
+
+Tauri の `--config` フラグがビルド時にこれをベースの `tauri.conf.json` の上にマージする。
+
+### ステップ 3: ランタイム設定の作成
+
+ランタイム設定はアプリにワークスペースの場所を伝える。
+
+```ts
+const configDir = path.join(os.homedir(), ".config", "zudotext", appName);
+const appConfig = { workspace: workspacePath };
+fs.writeFileSync(configPath, JSON.stringify(appConfig, null, 2) + "\n");
+```
+
+これは `~/.config/zudotext/ztoffice/config.json` を作成する：
+
+```json
+{
+  "workspace": "/Users/you/Documents/office-notes"
+}
+```
+
+実行時に Rust バックエンドがこの設定を読み取り、どのワークスペースをサーブするかを決定する。
+
+### ステップ 4: ビルド（オプション）
+
+`--build` または `--install` が指定された場合：
+
+```ts
+execFileSync(
+  "cargo",
+  ["tauri", "build", "--config", `tauri.conf.${appName}.json`],
+  { cwd: tauriDir, stdio: "inherit" },
+);
+```
+
+### ステップ 5: インストール（オプション）
+
+`--install` が指定された場合、ビルドされた `.app` が `/Applications` にコピーされる。
+
+```ts
+const builtApp = path.join(tauriDir, "target/release/bundle/macos", `${appName}.app`);
+const dest = path.join("/Applications", `${appName}.app`);
+
+if (fs.existsSync(dest)) {
+  const ok = await confirm(`${dest} already exists. Replace it?`);
+  if (ok) fs.rmSync(dest, { recursive: true });
+}
+fs.cpSync(builtApp, dest, { recursive: true });
+```
+
+<Warning>
+
+ジェネレーターは `/Applications` の既存の `.app` を置換する前に確認プロンプトを表示する。実行中のアプリを誤って上書きすることを防ぐ。
+
+</Warning>
+
+## アプリ名のバリデーション
+
+アプリ名はハイフンを含むことができる小文字英数字でなければならない。
+
+```ts
+function validateAppName(name: string): boolean {
+  return /^[a-z0-9]+(-[a-z0-9]+)*$/.test(name);
+}
+```
+
+有効: `ztoffice`, `zt-notes`, `myapp123`
+無効: `ZTOffice`, `zt_notes`, `my app`
+
+## 実際の使用例
+
+リポジトリは実際のアプリインスタンスのビルドスクリプトを定義している。
+
+```json
+{
+  "scripts": {
+    "build:ztoffice": "pnpm generate ztoffice ~/Library/CloudStorage/Dropbox/ainotes/office --skip-scaffold --install",
+    "build:ztprompts": "pnpm generate ztprompts ~/Library/CloudStorage/Dropbox/ainotes/prompts --skip-scaffold --install"
+  }
+}
+```
+
+各実行は約2-3分（Rust コンパイル + 署名）。結果は独自のワークスペースを開くスタンドアロンの macOS `.app`（~5MB）になる。
+
+## @takazudo/app-scaffold パッケージ
+
+スキャフォールドロジックは別パッケージ（`packages/app-scaffold/`）に存在し、プログラマティックに使用することも CLI 経由で使用することもできる。
+
+```ts
+import { scaffoldApp, getPreset } from "@takazudo/app-scaffold";
+
+const presetConfig = getPreset("standard");
+const result = scaffoldApp({
+  targetDir: "/path/to/workspace",
+  ...presetConfig,
+});
+
+// result.projectRoot -> 作成されたワークスペースへの絶対パス
+// result.cleanup() -> ワークスペースを削除（テストのティアダウン用）
+```
+
+## まとめ
+
+アプリ生成システムは強力なパターンを示す。**一つのコードベース、複数のアプリ**。設定（名前、識別子、ワークスペースパス）をコード（Rust バックエンド、React フロントエンド、共有パッケージ）から分離することで、新しいアプリインスタンスを数秒で作成し、数分でビルドできる。スキャフォールド、設定オーバーレイ、ランタイム設定が連携して、単一のリポジトリから完全に独立した `.app` バンドルを生成する。

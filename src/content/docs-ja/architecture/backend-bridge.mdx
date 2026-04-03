@@ -1,0 +1,231 @@
+---
+title: バックエンドブリッジ / アダプターパターン
+description: 単一のフロントエンドコードベースで3つの開発モードを実現するスワップ可能なバックエンド抽象化レイヤー
+sidebar_position: 5
+---
+
+# バックエンドブリッジ / アダプターパターン
+
+バックエンドブリッジは、フロントエンドを特定の通信メカニズムから分離する抽象化レイヤーである。アダプターを切り替えることで、同じ React フロントエンドが Tauri IPC（本番）、インメモリモック（開発/テスト）、HTTP REST API（ハイブリッド開発）のいずれに対しても動作する。
+
+## なぜ抽象化レイヤーが必要か
+
+Tauri アプリは通常、コンポーネントから直接 `invoke()` を呼び出す。これは動作するが、密結合を生む。
+
+- **Tauri なしでテストできない** -- ユニットテストや Storybook ストーリーは、Rust バックエンドが動作していないため `invoke()` を呼べない
+- **フロントエンドのみの開発ができない** -- React コンポーネントの変更に完全な Rust ビルドパイプラインの起動が必要
+- **代替トランスポートが使えない** -- HTTP 経由で動作中のバックエンドに対してフロントエンドをデバッグする方法がない
+
+バックエンドブリッジは、アダプターが実装する単一の `BackendAPI` インターフェースを定義することで、これら3つの問題すべてを解決する。
+
+## BackendAPI インターフェース
+
+インターフェースは、フロントエンドが必要とするすべての操作をドメインごとに整理して定義する。
+
+```ts
+export interface BackendAPI {
+  messages: {
+    list: () => Promise<MessageMeta[]>;
+    read: (filename: string) => Promise<string | null>;
+    write: (filename: string, content: string) => Promise<boolean>;
+    create: (name: string, content: string) => Promise<string>;
+    onChanged: (callback: (filename?: string) => void) => () => void;
+    // ...
+  };
+  pins: {
+    list: (pinIndex: number) => Promise<PinEntry[]>;
+    read: (pinIndex: number, entryPath: string) => Promise<string | null>;
+    // ...
+  };
+  terminal: {
+    spawn: (cwd?: string) => Promise<string>;
+    write: (id: string, data: string) => Promise<void>;
+    onData: (callback: (id: string, data: string) => void) => () => void;
+    // ...
+  };
+  draft: { /* ... */ };
+  drafts: { /* ... */ };
+  settings: {
+    get: () => Promise<AppSettings | null>;
+    save: (settings: AppSettings) => Promise<boolean>;
+  };
+  // ...more domains
+}
+```
+
+すべてのメソッドが `Promise`（コマンド）を返すか、クリーンアップ関数（イベントリスナー）を返す。この統一された契約により、アダプターが交換可能になる。
+
+## 初期化とアクセス
+
+ブリッジはシンプルなシングルトンパターンを使用する。
+
+```ts
+let backend: BackendAPI | null = null;
+
+export function initBackend(adapter: BackendAPI): void {
+  backend = adapter;
+}
+
+export function getBackend(): BackendAPI {
+  if (!backend) {
+    throw new Error("Backend not initialized. Call initBackend() first.");
+  }
+  return backend;
+}
+```
+
+アプリのエントリポイントが適切なアダプターで `initBackend()` を1回呼び出す。すべてのコンポーネントは `getBackend()` で API にアクセスする。
+
+## 3つのアダプター
+
+### TauriAdapter -- ネイティブ IPC
+
+本番環境で使用（`pnpm tauri:dev`）。すべての `BackendAPI` メソッドを Tauri の `invoke()` 呼び出しにマッピングする。
+
+```ts
+export function createTauriAdapter(): BackendAPI {
+  return {
+    messages: {
+      list: () => invoke<MessageMeta[]>("messages_list", { includeBody: false }),
+      read: (filename) => invoke<string | null>("messages_read", { filename }),
+      write: (filename, content) =>
+        invoke<boolean>("messages_write", { filename, content }),
+      onChanged: (callback) =>
+        syncListen<{ filename?: string }>("messages:changed", (payload) => {
+          callback(payload.filename);
+        }),
+      // ...
+    },
+    // ...
+  };
+}
+```
+
+イベントリスナーは `syncListen` ヘルパーを使用する。これは Tauri の非同期 `listen()` をラップして同期的なクリーンアップ関数を返し、`BackendAPI` の契約に合わせる。
+
+```ts
+function syncListen<T>(
+  event: string,
+  handler: (payload: T) => void,
+): () => void {
+  let unlistenFn: (() => void) | null = null;
+  let cancelled = false;
+
+  listen<T>(event, (e) => handler(e.payload))
+    .then((fn) => {
+      if (cancelled) fn();
+      else unlistenFn = fn;
+    });
+
+  return () => {
+    cancelled = true;
+    unlistenFn?.();
+  };
+}
+```
+
+### MockAdapter -- インメモリ
+
+フロントエンドのみの開発（`pnpm dev:mock`）と Storybook/テストで使用。インメモリの `Map` オブジェクトを使ってフル API を実装する。
+
+```ts
+export function createMockAdapter(options?: MockAdapterOptions): {
+  api: BackendAPI;
+  controls: MockControls;
+} {
+  const files = new Map<string, string>();
+  const pinFiles = new Map<string, string>();
+  // ...シードデータ...
+
+  const api: BackendAPI = {
+    messages: {
+      list: async () => { /* files Map からソートして返す */ },
+      read: async (filename) => files.get(filename) ?? null,
+      write: async (filename, content) => { files.set(filename, content); return true; },
+      // ...
+    },
+    // ...
+  };
+
+  const controls: MockControls = {
+    triggerMessagesChanged: (...args) => messagesChanged.emit(...args),
+    files,
+    // ...
+  };
+
+  return { api, controls };
+}
+```
+
+<Tip>
+
+モックアダプターは API と一緒に `controls` オブジェクトを返す。テストは `controls` を使ってイベントをトリガーし（例: `controls.triggerMessagesChanged()`）、内部状態を検査する（例: `controls.files`）。これにより、ファイルウォッチャー通知のようなバックエンド起因の変更をシミュレートしやすくなる。
+
+</Tip>
+
+### RestAdapter -- HTTP/SSE
+
+ハイブリッド開発で使用（`pnpm dev:rest`）。コマンドを HTTP リクエストに、イベントを Server-Sent Events にマッピングする。
+
+```ts
+export function createRestAdapter(baseUrl = "http://localhost:3001"): BackendAPI {
+  async function getJson<T>(path: string): Promise<T> {
+    const res = await fetch(`${baseUrl}${path}`);
+    if (!res.ok) throw new Error(`GET ${path} failed: ${res.status}`);
+    return res.json();
+  }
+
+  function sseListener(eventType: string, callback: (data: unknown) => void): () => void {
+    const es = getSharedEventSource();
+    const handler = (e: MessageEvent) => callback(JSON.parse(e.data));
+    es.addEventListener(eventType, handler);
+    return () => {
+      es.removeEventListener(eventType, handler);
+      releaseSharedEventSource();
+    };
+  }
+
+  return {
+    messages: {
+      list: () => getJson<MessageMeta[]>("/api/messages"),
+      read: (filename) => getText(`/api/messages/${encodeURIComponent(filename)}`),
+      onChanged: (callback) =>
+        sseListener("messages:changed", (data) =>
+          callback((data as { filename?: string }).filename)
+        ),
+      // ...
+    },
+    // ...
+  };
+}
+```
+
+REST アダプターは参照カウント付きの共有 `EventSource` を使用する。複数のリスナーが1つの SSE 接続を共有し、最後のリスナーがアンサブスクライブした時に閉じる。
+
+<Note>
+
+一部の機能は本質的にネイティブであり、HTTP 経由では動作しない。REST アダプターはこれらを警告付きでスタブする。
+
+- `terminal.*` -- PTY セッションは HTTP 経由で転送できない
+- `dialog.openDirectory` / `dialog.openFile` -- ネイティブ OS ダイアログには Tauri が必要
+- `workspace.setDir` -- ネイティブディレクトリピッカーが必要
+
+</Note>
+
+## 有効化される開発モード
+
+| モード | コマンド | アダプター | バックエンド | 用途 |
+|--------|---------|---------|---------|----------|
+| フル Tauri | `pnpm tauri:dev` | TauriAdapter | Rust (IPC) | 本番同等 |
+| モック | `pnpm dev:mock` | MockAdapter | なし | フロントエンドのみ、Storybook、テスト |
+| REST | `pnpm dev:rest` | RestAdapter | Rust (HTTP) | リアルデータでのデバッグ、フロントエンド変更に再コンパイル不要 |
+
+## 主要な設計判断
+
+1. **Promise ベースのコマンド、コールバックベースのイベント** -- コマンドは一回限りのリクエスト/レスポンスペア。イベントは長期間のサブスクリプション。インターフェースはこの違いを反映している。
+
+2. **イベントリスナーはクリーンアップ関数を返す** -- React の `useEffect` クリーンアップパターンに従い、すべての `on*` メソッドがアンサブスクライブ関数を返す。コンポーネントのアンマウント時のメモリリークを防ぐ。
+
+3. **アダプターは起動時に1回設定** -- 実行時の切り替えなし。Vite の設定がどのアダプターをビルドで使用するかを決定し、ランタイムコードをシンプルに保つ。
+
+4. **モックアダプターは完全な忠実度を持つ** -- 衝突処理、フロントマターパース、ソート順序を実際のバックエンドと一致するよう実装する。これにより統合バグを早期に発見できる。
