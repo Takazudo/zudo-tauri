@@ -1,0 +1,215 @@
+---
+title: 共有パッケージ概要
+description: zudo-text モノレポエコシステムを構成する16以上の共有パッケージの概要
+sidebar_position: 6
+---
+
+# 共有パッケージ概要
+
+zudo-text モノレポには `@takazudo/` スコープ下に16の共有パッケージが含まれている。すべてプライベートワークスペース依存で、npm には公開されていない。tsup でビルドし、vitest でテストする。各パッケージは `src/index.ts` からエクスポートし、ESM/CJS デュアルエクスポートに対応。
+
+この記事はパッケージを目的別にグループ化し、各パッケージの役割を説明する。コードベースを探索する開発者のロードマップとして機能する。
+
+## 設定とスキャフォールド
+
+### @takazudo/app-defaults
+
+中心的な設定パッケージ。`AppSettings` TypeScript 型、すべてのデフォルト値、`validateSettings()` 関数を定義する。設定を読み書きするすべてのコンシューマーがこのパッケージに依存する。
+
+**主なエクスポート:**
+
+- `AppSettings` 型 -- 完全な設定スキーマ（general、editor、vim、terminal、shortcuts、layout、sync）
+- `defaultSettings` -- すべてのフィールドの適切なデフォルト
+- `validateSettings(unknown)` -- 型チェック、範囲バリデーション、レガシーフィールド名の移行
+- `VALID_DISPLAY_SCALES` -- 離散ディスプレイスケールステップ（0.75 から 2.0）
+
+**使用先:** バックエンドブリッジ（モックアダプターのデフォルト）、アプリスキャフォールド（ワークスペース生成）、Tauri フロントエンド（設定ダイアログ）
+
+### @takazudo/app-scaffold
+
+プリセットから完全なアプリワークスペースを生成する。ディレクトリ構造の作成、設定ファイルの書き込み、テンプレートファイルのコピーを行う。
+
+**主なエクスポート:**
+
+- `scaffoldApp(config)` -- 必要な全ファイルを含むワークスペースディレクトリを作成
+- `getPreset(name)` -- プリセット設定を返す（minimal、standard、full）
+- `ScaffoldResult` -- テストのティアダウン用 `cleanup()` を含む
+
+**プリセット:** `minimal`（必要最小限のワークスペース）、`standard`（スキルピン付き）、`full`（スキルとノートのピン付き）
+
+## バックエンド通信
+
+### @takazudo/backend-bridge
+
+React フロントエンドと Rust バックエンド間の抽象化レイヤー。`BackendAPI` インターフェースを定義し、3つのアダプター実装を提供する。
+
+**主なエクスポート:**
+
+- `BackendAPI` インターフェース -- すべてのバックエンド操作（messages、pins、drafts、terminal、settings、sync、auth）
+- `initBackend(adapter)` / `getBackend()` -- シングルトンの初期化とアクセス
+- `createMockAdapter()` -- 開発とテスト用のインメモリ実装
+- `createRestAdapter()` -- ハイブリッド開発用の HTTP/SSE 実装
+- `createTauriAdapter()` -- ネイティブ IPC 実装
+
+**3つのモード:** `pnpm tauri:dev`（TauriAdapter）、`pnpm dev:mock`（MockAdapter）、`pnpm dev:rest`（RestAdapter）
+
+### @takazudo/sync-client
+
+マニフェストベースの差分比較と競合解決を持つクラウドボールト同期クライアント。スタンドアロン -- Tauri 依存なし。
+
+**目的:** クラウドボールトサーバーを介してデバイス間でワークスペースファイルを同期する。ローカルとリモートのマニフェストを比較し、変更されたファイルをアップロード/ダウンロードし、競合を処理する。
+
+## UI コンポーネント
+
+### @takazudo/ui-components
+
+アプリ全体で使用される共有 React コンポーネント。プリミティブ UI 要素と複合コンポーネントの両方を含む。
+
+**コンポーネント:** Icons、Toast 通知、TabBar、PanelDivider（ドラッグでリサイズ）、PageLayout、SidebarItem、Dialog など。
+
+**開発:** Storybook ストーリーと vitest テストを持つ。`pnpm storybook` でコンポーネントを閲覧可能。
+
+### @takazudo/command-palette
+
+コマンドパレット UI コンポーネント。アプリコマンドを実行するための検索可能でキーボードナビゲーション可能なオーバーレイを提供する。
+
+**機能:** ファジー検索、キーボードナビゲーション、コマンドグルーピング、ショートカット表示。
+
+### @takazudo/color-themes
+
+カラーテーマ定義と CSS 変数生成。2層カラーシステムを実装: 16色パレット（Tier 1）からセマンティックトークン（Tier 2）。
+
+**主なエクスポート:**
+
+- `colorSchemes` -- 10の組み込みカラースキーム（ダークとライト）
+- `applyTheme(name)` -- `--palette-*` CSS カスタムプロパティを設定
+- `applyColors(settings)` -- `--theme-*` セマンティック CSS カスタムプロパティを設定
+- `toXtermTheme(scheme)` -- スキームを xterm の `ITheme` 形式に変換
+- `schemaToColors(scheme)` -- `ColorScheme` からセマンティック `ColorSettings` を導出
+
+## コンテンツ管理
+
+### @takazudo/kanban-board
+
+スイムレーン、グリッドビュー、フィルター、インライン編集を備えたカンバンボード UI コンポーネント。
+
+**機能:** ドラッグ&ドロップカード、スイムレーンレイアウト、グリッドビュー切替、インラインカード編集、キーボードショートカット（H/J/K/L ナビゲーション）、ラベルやステータスでフィルター。
+
+### @takazudo/kanban-parser
+
+マークダウンベースのカンバンデータパーサーとシリアライザー。構造化カンバンデータモデルとマークダウンテキスト形式間を変換する。
+
+**目的:** カンバンボードはマークダウンファイルとして保存される。このパーサーがマークダウンをカンバンボードコンポーネント用の構造化モデルに読み取り、変更をマークダウンにシリアライズする。
+
+### @takazudo/todo-board
+
+Todo ボード UI コンポーネント。カンバンと似ているが、シンプルなタスク管理に特化。
+
+### @takazudo/todo-parser
+
+マークダウンベースの todo データパーサーとシリアライザー。チェックボックススタイルのマークダウンを構造化 todo アイテムにパースする。
+
+## エディタユーティリティ
+
+### @takazudo/code-block
+
+コピーボタン付きマークダウンコードブロックレンダリング。マークダウンプレビューペインでフェンスドコードブロックをシンタックスハイライトとワンクリックコピー機能付きでレンダリングする。
+
+### @takazudo/find-in-page
+
+マークダウンプレビューペイン用の DOM ベーステキスト検索。レンダリングされた HTML 出力内のマッチをハイライトする。
+
+**注意:** これはブラウザの Ctrl+F ではなく、ページのサブセットであるアプリのプレビューペイン DOM 内を検索する。
+
+## 入力とナビゲーション
+
+### @takazudo/shortcut-engine
+
+コードサポート付きキーボードショートカットエンジン。キーボードショートカットの登録、競合検出、実行を管理する。
+
+**機能:** シングルキーとコード（マルチキーシーケンス）ショートカット、修飾キーサポート（Mod/Ctrl/Alt/Shift）、設定を通じた設定可能なバインディング、競合検出。
+
+## ファイルシステムユーティリティ
+
+### @takazudo/file-utils
+
+バックエンドブリッジや他のコンシューマー間で共有されるファイルシステムユーティリティ。
+
+**主なエクスポート:**
+
+- `parseFrontmatter(content)` -- マークダウンから YAML フロントマターとボディを抽出
+- `generateFilename(name)` -- 日付プレフィックス付きスラグファイル名を作成（例: `20240101-my-note.md`）
+- `extractDateFromFilename(filename)` -- ファイル名から日付プレフィックスをパース
+- `makeSlug(text)` -- テキストを URL セーフスラグに変換
+
+## CSS 開発
+
+### @takazudo/css-playground
+
+CSS プレイグラウンド開発ツール。CSS スタイル、テーマ、コンポーネントレイアウトを実験するためのスタンドアロン環境。
+
+**使い方:** `pnpm playground`（ローカル）または `pnpm playground:net`（LAN アクセス可能）
+
+## パッケージの規約
+
+すべてのパッケージが一貫したパターンに従う。
+
+```
+packages/<name>/
+  src/
+    index.ts          # メインエクスポート
+    *.ts              # ソースファイル
+    *.test.ts         # テスト（ソースと共存）
+  package.json
+  tsconfig.json
+  tsup.config.ts      # ビルド設定
+```
+
+**デュアルエクスポート:** `import` はソース（開発用に `./src/index.ts`）に解決、`require` はビルド済み（`./dist/index.js`）に解決。
+
+**パッケージ間依存:** `workspace:*` プロトコルを使用：
+
+```json
+{
+  "dependencies": {
+    "@takazudo/app-defaults": "workspace:*",
+    "@takazudo/file-utils": "workspace:*"
+  }
+}
+```
+
+**テスト:** すべてのパッケージが単一コマンドでテスト可能：
+
+```bash
+# 全パッケージテスト実行
+pnpm --filter "@takazudo/*" test
+
+# 特定パッケージ
+pnpm --filter @takazudo/app-defaults test
+```
+
+## 依存グラフ（簡略版）
+
+```
+app-defaults ─────────────┬──── color-themes
+                          │
+backend-bridge ───────────┼──── file-utils
+                          │
+app-scaffold ─────────────┘
+                          
+ui-components ────────────── （スタンドアロン）
+command-palette ──────────── （スタンドアロン）
+shortcut-engine ──────────── （スタンドアロン）
+kanban-board ─────────────── kanban-parser
+todo-board ───────────────── todo-parser
+code-block ───────────────── （スタンドアロン）
+find-in-page ─────────────── （スタンドアロン）
+sync-client ──────────────── （スタンドアロン）
+css-playground ───────────── color-themes
+```
+
+`app-defaults` と `color-themes` パッケージが依存グラフの中心にある。これらのパッケージへの変更は多くのコンシューマーに影響するため、徹底的にテストすべきである。
+
+## まとめ
+
+パッケージエコシステムは明確な関心の分離に従う。設定は `app-defaults` に集中、バックエンド通信は `backend-bridge` に抽象化、UI コンポーネントは `ui-components` で再利用可能、ドメイン固有のロジック（kanban、sync、shortcuts）は専用パッケージに配置。この構造により、各関心事の独立した開発とテストが可能になる。

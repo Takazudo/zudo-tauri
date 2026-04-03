@@ -1,0 +1,230 @@
+---
+title: ディスプレイスケールシステム
+description: ブラウザズームを使わずにUI全体をスケーリングするCSS カスタムプロパティ方式（離散プリセットステップ）
+sidebar_position: 5
+---
+
+# ディスプレイスケールシステム
+
+Tauri アプリは WebView で動作するが、ブラウザネイティブのズーム（`Ctrl+/Ctrl-`）はレイアウトの問題を引き起こす。テキストがリフローし、スクロールバーがずれ、ピクセル単位で配置されたコンポーネントが崩れる。ディスプレイスケールシステムは、ブラウザズームの代わりに CSS カスタムプロパティ（`--display-scale`）を使い、アプリ全体のフォント、スペーシング、寸法を均一にスケーリングする。
+
+## ブラウザズームの問題
+
+ブラウザズームは CSS ピクセル比率を調整してビューポート全体をスケーリングする。Tauri デスクトップアプリでは、これがいくつかの問題を引き起こす。
+
+- **レイアウトシフト** -- 固定ピクセル比率で分割されたパネルが突然オーバーフローまたは崩壊する
+- **ターミナルのずれ** -- xterm.js はフォントメトリクスから文字セルを計算するが、ピクセル比率の変更でグリッドが同期しなくなる
+- **CodeMirror の不具合** -- エディタは初期化時に行の高さやガター幅を測定するが、ズーム変更でこれらの測定値が無効になる
+- **永続化できない** -- ブラウザズームはセッション間でリセットされ、アプリ設定に保存できない
+
+## `--display-scale` 方式
+
+ブラウザのズームレベルを変更する代わりに、アプリはドキュメントルートに単一の CSS カスタムプロパティを設定する。
+
+```ts
+import { VALID_DISPLAY_SCALES } from "@takazudo/app-defaults";
+
+export function applyDisplayScale(scale: number): void {
+  const validScale = (VALID_DISPLAY_SCALES as readonly number[]).includes(scale)
+    ? scale
+    : 1.0;
+  document.documentElement.style.setProperty(
+    "--display-scale",
+    String(validScale),
+  );
+}
+```
+
+アプリ内のすべてのスケーラブルな寸法が `calc()` を通じてこの変数を参照する。
+
+```css
+/* ダイアログの寸法が --display-scale に連動してスケーリング */
+width: calc(680px * var(--display-scale, 1));
+height: calc(480px * var(--display-scale, 1));
+
+/* ステータスバーの高さ */
+--status-bar-height: calc(26px * var(--display-scale, 1));
+
+/* サイドバーの幅 */
+width: calc(180px * var(--display-scale, 1));
+```
+
+## 離散プリセットステップ
+
+任意のズームレベル（サブピクセルレンダリングのアーティファクトを引き起こす）の代わりに、固定された離散的なステップセットを使用する。
+
+```ts
+export const VALID_DISPLAY_SCALES = [
+  0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0
+] as const;
+```
+
+これにより 75% から 200% まで8つの選択肢が提供される。`validateSettings()` 関数は範囲外の値を最も近い有効なステップにスナップする。
+
+```ts
+function snapToNearestScale(value: unknown): number {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return defaultGeneralSettings.displayScale;
+  }
+  let closest = VALID_DISPLAY_SCALES[0];
+  let minDiff = Math.abs(value - closest);
+  for (const scale of VALID_DISPLAY_SCALES) {
+    const diff = Math.abs(value - scale);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closest = scale;
+    }
+  }
+  return closest;
+}
+```
+
+<Tip>
+
+離散的な方式により、1.13x や 1.67x のような任意のズームレベルで発生するサブピクセルのぼやけを回避できる。各ステップは、一般的なベースフォントサイズ（13px、14px、16px）に対してきれいなピクセル倍数を生成するよう選ばれている。
+
+</Tip>
+
+## 各コンポーネントのスケーリング
+
+### CodeMirror エディタ
+
+エディタは設定されたフォントサイズとパディングにディスプレイスケールを JavaScript で乗算する。
+
+```ts
+const displayScale = appSettings?.general?.displayScale ?? 1;
+
+const scaledFontSize = settings.fontSize * displayScale;
+const scaledPaddingH = settings.paddingHorizontal * displayScale;
+const scaledPaddingV = settings.paddingVertical * displayScale;
+```
+
+これにより、CodeMirror の内部測定値が正確に保たれる。スケーリング済みの値で初期化されるため、後からスケーリングされることはない。
+
+### xterm ターミナル
+
+ターミナルもフォントサイズにスケール係数を適用する。
+
+```ts
+const displayScale = settings?.general?.displayScale ?? 1;
+const term = new Terminal({
+  fontSize: Math.round(termSettings.fontSize * displayScale),
+  // ...
+});
+```
+
+実行時にディスプレイスケールが変更された場合、ターミナルはフォントサイズを更新して再フィットする。
+
+```ts
+useEffect(() => {
+  const newFontSize = Math.round(termFontSize * displayScale);
+  if (term.options.fontSize !== newFontSize) {
+    term.options.fontSize = newFontSize;
+    fitAddon.fit();
+  }
+}, [displayScale, termFontSize]);
+```
+
+### ダイアログと固定幅パネル
+
+ダイアログはインラインスタイルの `calc()` で寸法をスケーリングする。
+
+```tsx
+<div
+  style={{
+    width: "calc(680px * var(--display-scale, 1))",
+    height: "calc(480px * var(--display-scale, 1))",
+  }}
+>
+  {/* 設定ダイアログの内容 */}
+</div>
+```
+
+`var(--display-scale, 1)` のフォールバックにより、CSS プロパティが設定されていなくてもレイアウトが正しく動作する。
+
+## ネイティブズームの防止
+
+ユーザーが誤ってブラウザズーム（ディスプレイスケールと重複してしまう）をトリガーすることを防ぐため、ネイティブのズームジェスチャーをインターセプトしてリダイレクトする。
+
+```ts
+export function preventNativeZoom(): void {
+  // Ctrl+wheel -> ディスプレイスケール変更
+  window.addEventListener('wheel', (e) => {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      const direction = e.deltaY < 0 ? "in" : "out";
+      window.dispatchEvent(
+        new CustomEvent("display-scale-change", { detail: { direction } })
+      );
+    }
+  }, { passive: false });
+
+  // Ctrl+/-/0 -> ディスプレイスケール変更
+  window.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    if (e.key === '+' || e.key === '=') {
+      e.preventDefault();
+      window.dispatchEvent(
+        new CustomEvent("display-scale-change", { detail: { direction: "in" } })
+      );
+    } else if (e.key === '-') {
+      e.preventDefault();
+      window.dispatchEvent(
+        new CustomEvent("display-scale-change", { detail: { direction: "out" } })
+      );
+    } else if (e.key === '0') {
+      e.preventDefault();
+      window.dispatchEvent(
+        new CustomEvent("display-scale-change", { detail: { direction: "reset" } })
+      );
+    }
+  });
+
+  // トラックパッドのピンチズームを防止
+  document.addEventListener('gesturestart', (e) => e.preventDefault());
+  document.addEventListener('gesturechange', (e) => e.preventDefault());
+  document.addEventListener('gestureend', (e) => e.preventDefault());
+}
+```
+
+React アプリは `display-scale-change` カスタムイベントをリッスンし、プリセットリストを順次切り替える。
+
+## 設定 UI
+
+設定ダイアログのディスプレイスケールセレクターは、プリセットをボタン行として表示する。
+
+```tsx
+<div className="flex gap-xs flex-wrap">
+  {VALID_DISPLAY_SCALES.map((scale) => {
+    const isActive = (values.displayScale ?? 1.0) === scale;
+    return (
+      <button
+        key={scale}
+        className={isActive ? "bg-accent text-on-accent" : "bg-base border-edge"}
+        onClick={() => onChange({ displayScale: scale })}
+      >
+        {getDisplayScaleLabel(scale)}
+      </button>
+    );
+  })}
+</div>
+```
+
+`getDisplayScaleLabel()` ヘルパーは数値をパーセント文字列に変換する。
+
+```ts
+export function getDisplayScaleLabel(scale: number): string {
+  return `${Math.round(scale * 100)}%`;
+}
+```
+
+## まとめ
+
+ディスプレイスケールシステムは、デスクトップ Web アプリのスケーリングパターンを示している。
+
+1. **ネイティブズームをインターセプト** -- `Ctrl+/-` とピンチズームが WebView に影響しないようにする
+2. **CSS カスタムプロパティを使用** -- ドキュメントルートに `--display-scale` を設定する
+3. **`calc()` で寸法をスケーリング** -- 固定ピクセル値に変数を乗算する
+4. **プログラマティックなコンポーネントは JS でスケーリング** -- CodeMirror と xterm は CSS ではなく JavaScript でフォントサイズを設定する必要がある
+5. **離散ステップを使用** -- きれいなプリセット値に制限してサブピクセルアーティファクトを回避する
+6. **設定に永続化** -- スケール係数はアプリ設定の一部として、他の設定と同様にバリデーションと移行が行われる

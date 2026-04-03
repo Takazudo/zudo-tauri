@@ -1,0 +1,238 @@
+---
+title: カラーテーマシステム
+description: 16色パレットからセマンティック CSS カスタムプロパティへの2層カラーアーキテクチャ
+sidebar_position: 7
+---
+
+# カラーテーマシステム
+
+カラーテーマシステムは2層アーキテクチャを使用する。**Tier 1** は16色パレット（ターミナルカラースキームと同様）を定義し、**Tier 2** はパレットインデックスからセマンティックトークン（背景、アクセント、危険、ホバー状態）を導出する。両層とも CSS カスタムプロパティとして公開され、Tailwind CSS ユーティリティやコンポーネントスタイルで使用できる。
+
+## Tier 1: カラーパレット
+
+各カラースキームは標準のターミナルカラー規約（ノーマル8色 + ブライト8色）に合わせた16色パレットを定義する。
+
+```ts
+export interface ColorScheme {
+  name: string;
+  label: string;
+  isDark: boolean;
+  background: ColorRef;    // パレットインデックスまたは直接カラー
+  foreground: ColorRef;
+  cursor: ColorRef;
+  selectionBg: ColorRef;
+  selectionFg: ColorRef;
+  palette: [
+    string, string, string, string, // 0-3: black, red, green, yellow
+    string, string, string, string, // 4-7: blue, magenta, cyan, white
+    string, string, string, string, // 8-11: ブライトバリアント
+    string, string, string, string, // 12-15: ブライトバリアント
+  ];
+  semantic?: { /* Tier 2 オーバーライド */ };
+}
+```
+
+`ColorRef` 型はパレットインデックス（数値）または直接16進値（文字列）でカラーを参照できる。
+
+```ts
+export type ColorRef = number | string;
+```
+
+この柔軟性により、スキームは自身のパレットエントリを参照することも、パレットにないカスタムカラーを使用することもできる。
+
+```ts
+// "default-dark" はパレットインデックスを参照
+{
+  background: 0,    // palette[0] = "#1C1C1C"
+  foreground: 7,    // palette[7] = "#A0A0A0"
+  cursor: 6,        // palette[6] = "#90A1B9"
+}
+
+// "catppuccin-mocha" は直接16進値を使用
+{
+  background: "#1e1e2e",
+  foreground: "#cdd6f4",
+  cursor: "#f5e0dc",
+}
+```
+
+## 組み込みスキーム
+
+パッケージには10のカラースキームが同梱されている。
+
+| スキーム | タイプ | 説明 |
+|--------|------|-------------|
+| `default-dark` | ダーク | セマンティックオーバーライド付きカスタムウォームダークテーマ |
+| `default-light` | ライト | セマンティックオーバーライド付きカスタムライトテーマ |
+| `catppuccin-mocha` | ダーク | Catppuccin パステルパレット（mocha バリアント） |
+| `catppuccin-latte` | ライト | Catppuccin パステルパレット（latte バリアント） |
+| `tokyo-night` | ダーク | Tokyo Night カラースキーム |
+| `dracula` | ダーク | Dracula クラシックテーマ |
+| `nord` | ダーク | 北欧風ブルーイッシュパレット |
+| `solarized-dark` | ダーク | Ethan Schoonover の Solarized（ダーク） |
+| `one-dark` | ダーク | Atom One Dark テーマ |
+| `gruvbox-dark` | ダーク | レトロなグルーヴカラー |
+
+## Tier 2: セマンティックトークン
+
+生のパレットカラーは UI コンポーネントにとって意味を持たない。「palette[3] を使用」は意図を伝えない。セマンティックトークンがこのギャップを埋める。
+
+```ts
+export interface ColorSettings {
+  bgPrimary: string;
+  bgSecondary: string;
+  bgSurface: string;
+  textPrimary: string;
+  textSecondary: string;
+  accent: string;
+  accentSubtle: string;
+  border: string;
+  danger: string;
+  dangerStrong: string;
+  onAccent: string;       // アクセント背景上のテキスト色
+  hoverOverlay: string;
+  hoverBg: string;
+  hoverFg: string;
+  selection: string;
+  cursor: string;
+}
+```
+
+### セマンティックカラーの導出
+
+`schemaToColors()` 関数がスキームのパレットからセマンティックトークンを生成する。
+
+```ts
+export function schemaToColors(scheme: ColorScheme): ColorSettings {
+  const p = scheme.palette;
+  const bg = resolveColor(scheme.background, p, p[0]);
+  const fg = resolveColor(scheme.foreground, p, p[15]);
+  const sem = resolveSemanticColors(scheme);
+
+  return {
+    bgPrimary: bg,
+    bgSecondary: sem.bgSecondary,
+    textPrimary: fg,
+    accent: sem.accent,
+    // ...
+  };
+}
+```
+
+### セマンティックオーバーライド
+
+スキームは `semantic` オブジェクトを通じてデフォルトのパレット→セマンティックマッピングをオーバーライドできる。異なるパレットが正しく見えるためには異なるマッピングが必要なため、これは不可欠である。
+
+```ts
+// "default-dark" はいくつかのセマンティックトークンをオーバーライド
+semantic: {
+  bgSecondary: "bg",    // 背景色を使用（特殊参照）
+  surface: 0,           // パレットインデックス 0
+  accent: 3,            // パレットインデックス 3（イエロー）
+  onAccent: "bg",       // アクセント上のテキスト = 背景色
+  hoverBg: 13,
+  hoverFg: 11,
+}
+```
+
+特殊文字列値 `"bg"` と `"fg"` はスキームの解決済み背景色と前景色を参照し、自己参照的な定義を可能にする。
+
+### デフォルトフォールバック
+
+セマンティックオーバーライドを提供しないスキームにはデフォルトが使用される。
+
+```ts
+export const SEMANTIC_DEFAULTS: Record<string, number> = {
+  bgSecondary: 0,
+  surface: 0,
+  textSecondary: 15,
+  accent: 3,
+  border: 0,
+  danger: 1,
+  hoverBg: 8,
+  hoverFg: 7,
+};
+```
+
+オーバーライドのないスキーム（Catppuccin、Tokyo Night など）では、カラーミキシングを使用した計算済みフォールバックも生成される。
+
+```ts
+accentSubtle: colorMixAlpha(accentColor, 0.1, bg),  // 背景上に10%のアクセント
+hoverOverlay: colorMixAlpha(fg, 0.03, bg),           // 背景上に3%の前景
+hoverBg: colorMixAlpha(fg, 0.1, bg),                 // 背景上に10%の前景
+```
+
+## CSS カスタムプロパティ
+
+### Tier 1: パレット変数
+
+`applyTheme()` 関数により `:root` に適用される。
+
+```ts
+export function applyTheme(themeName: string): ColorScheme {
+  const scheme = getSchemeByName(themeName);
+  const root = document.documentElement;
+  const p = scheme.palette;
+
+  root.style.setProperty("--palette-bg", resolveColor(scheme.background, p, p[0]));
+  root.style.setProperty("--palette-fg", resolveColor(scheme.foreground, p, p[15]));
+  for (let i = 0; i <= 15; i++) {
+    root.style.setProperty(`--palette-${i}`, p[i]);
+  }
+  return scheme;
+}
+```
+
+これにより CSS から `--palette-0` から `--palette-15`、`--palette-bg`、`--palette-fg` などにアクセスできる。
+
+### Tier 2: セマンティック変数
+
+`applyColors()` 関数により適用される。
+
+```ts
+const colorKeyToCssVar: Record<keyof ColorSettings, string> = {
+  bgPrimary: "--theme-bg-primary",
+  bgSecondary: "--theme-bg-secondary",
+  textPrimary: "--theme-text-primary",
+  accent: "--theme-accent",
+  danger: "--theme-danger",
+  hoverBg: "--theme-hover-bg",
+  // ...
+};
+```
+
+コンポーネントはパレットインデックスではなくセマンティック変数を使用する。
+
+```css
+/* 良い例: セマンティックな意図が明確 */
+.sidebar { background: var(--theme-bg-secondary); }
+.button { background: var(--theme-accent); color: var(--theme-on-accent); }
+.error { color: var(--theme-danger); }
+
+/* 避ける: パレットインデックスにはセマンティックな意味がない */
+.sidebar { background: var(--palette-0); }
+```
+
+## xterm 統合
+
+ターミナルには独自のテーマオブジェクトが必要（CSS 変数ではない）。`toXtermTheme()` 関数が `ColorScheme` を xterm の `ITheme` 形式に変換する。
+
+```ts
+export function toXtermTheme(scheme: ColorScheme) {
+  const p = scheme.palette;
+  return {
+    background: resolveColor(scheme.background, p, p[0]),
+    foreground: resolveColor(scheme.foreground, p, p[15]),
+    black: p[0],
+    red: p[1],
+    green: p[2],
+    // ...全16 ANSI カラー
+  };
+}
+```
+
+カスタム DOM イベント（`zudotext:scheme-changed`）がスキーム変更時にターミナルコンポーネントに通知し、xterm テーマを再適用できるようにする。
+
+## まとめ
+
+2層システムは**利用可能なカラー**（パレット）と**その意味**（セマンティックトークン）を分離する。スキームは16色のパレットを定義し、オプションでセマンティックマッピングをオーバーライドするだけでよい。システムが残りを処理する：ホバー状態の生成、微妙なバリアントの計算、CSS 変数の設定、フォーマット固有のテーマオブジェクトへの変換。これにより、エディタ、ターミナル、UI コンポーネント、Tailwind ユーティリティ全体でテーマの一貫性が保たれる。

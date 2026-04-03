@@ -1,0 +1,143 @@
+---
+title: E2E テスト分割戦略
+description: Tauri アプリ向けに Playwright テストを CI セーフと @interactive カテゴリに分割する方法
+sidebar_position: 6
+---
+
+# E2E テスト分割戦略
+
+Tauri アプリは固有のテスト課題に直面する。WebView は OS の WebKit エンジンで動作し、アプリのキーボードショートカットエンジンは CI のヘッドレスブラウザでキーボードイベントを確実に受信しない。この記事では、ほとんどのテストを CI で実行しつつ、キーボード依存のテストをローカル実行に予約する実用的な分割戦略を文書化する。
+
+## 問題
+
+設定ダイアログを開くテストを考える。
+
+```ts
+test("opens settings dialog", async ({ page }) => {
+  await page.keyboard.press("Control+,");
+  await expect(page.getByTestId("settings-dialog")).toBeVisible();
+});
+```
+
+このテストは開発者のマシンでは完璧に動作するが、CI では断続的に（または常に）失敗する。
+
+1. **ヘッドレスブラウザはキーボードショートカットの処理が異なる** -- ショートカットエンジンは `keydown` イベントをリッスンするが、ヘッドレス Chromium は実際のブラウザと同一にディスパッチしない場合がある
+2. **アプリのショートカットエンジンはフォーカスが必要** -- CI ではページがショートカット発火に適切なフォーカスコンテキストを持たない場合がある
+3. **タイミングの問題** -- ショートカットエンジンは非同期に初期化されるため、エンジンの準備前にテストがキーイベントを送信する可能性がある
+
+一方、DOM API を直接使用するテスト（ボタンクリック、テキスト内容読み取り、表示状態のアサーション）は、ローカルと CI の両環境で確実に動作する。
+
+## 2つのテストカテゴリ
+
+### CI セーフテスト
+
+DOM を直接操作するテスト -- クリック、`page.evaluate()`、要素の表示/コンテンツのアサーション。キーボードショートカットに依存しない。
+
+```ts
+test.describe("Core Navigation", () => {
+  test("navigates to archives via sidebar click", async ({ page }) => {
+    await page.click('[data-testid="nav-archives"]');
+    await expect(page.getByTestId("archives-page")).toBeVisible();
+  });
+});
+```
+
+### `@interactive` テスト
+
+アプリのショートカットエンジンがキーボードイベントを処理する必要があるテスト。`test.describe` の名前に `@interactive` タグを付ける。
+
+```ts
+test.describe("Settings Dialog @interactive", () => {
+  test("opens with Ctrl+,", async ({ page }) => {
+    await page.keyboard.press("Control+,");
+    await expect(page.getByTestId("settings-dialog")).toBeVisible();
+  });
+});
+```
+
+## CI の設定
+
+CI は `--grep-invert` を使って `@interactive` テストを除外する。
+
+```bash
+# CI が実行するもの（@interactive を除外）
+pnpm test:e2e --project=chromium --grep-invert="@interactive"
+```
+
+ローカル開発ではすべてのテストを実行する。
+
+```bash
+# ローカルで全テスト実行（@interactive を含む）
+pnpm test:e2e
+
+# @interactive テストのみ実行
+pnpm test:e2e --grep="@interactive"
+```
+
+## テストファイルの構成
+
+テストはカテゴリではなく機能ごとに整理される。各 spec ファイルに CI セーフと `@interactive` の両方のテストブロックを含めることができる。
+
+```
+e2e/
+  command-palette.spec.ts         # @interactive（キーボードショートカット）
+  core-navigation.spec.ts         # CI セーフ（クリック）
+  display-scale.spec.ts           # CI セーフ（DOM アサーション）
+  draft-shortcut-guard.spec.ts    # @interactive（キーボードショートカット）
+  indent-guides.spec.ts           # CI セーフ（ビジュアルアサーション）
+  list-indent-wrap.spec.ts        # CI セーフ（エディタ動作）
+  panel-divider-drag.spec.ts      # CI セーフ（マウスドラッグ）
+  settings-dialog.spec.ts         # @interactive（Ctrl+, で開く）
+  split-pane.spec.ts              # CI セーフ（DOM アサーション）
+  write-and-archive.spec.ts       # CI セーフ（クリックとテキスト入力）
+  zoom-fix-verification.spec.ts   # CI セーフ（CSS アサーション）
+  helpers.ts                      # 共有テストユーティリティ
+```
+
+<Tip>
+
+新しいテストファイルを作成する際、「このテストはキーボードショートカットでアプリコマンドをトリガーするか？」と問う。はいなら `@interactive` タグを付ける。クリック、`page.evaluate()`、DOM アサーションのみ使用するなら CI セーフであり、タグは不要。
+
+</Tip>
+
+## WebKit 要件
+
+Tauri アプリは OS の WebKit エンジンを使用する（Chromium ではない）ため、すべての Playwright テストはローカル検証で WebKit ブラウザを使用すべきである。
+
+```ts
+// playwright.config.ts
+export default defineConfig({
+  projects: [
+    {
+      name: "webkit",
+      use: { ...devices["Desktop Safari"] },
+    },
+  ],
+});
+```
+
+<Warning>
+
+Chromium ベースのテスト結果は、ユーザーが実際に見るものと異なる場合がある。Chromium で通過するテストが、WebKit が CSS、イベント、フォーカスを異なる方法で処理するため、実際のアプリでは失敗する可能性がある。常にローカルで WebKit を使って検証すること。
+
+</Warning>
+
+CI は実用的な理由で Chromium を使用する（ヘッドレスモードでより高速かつ安定）が、CI テストは WebKit 固有の動作を避けるよう明示的に設計されている。より深いブラウザ統合をテストする `@interactive` テストは、ローカルでのみ WebKit を使って実行する。
+
+## 新しいテストの書き方
+
+以下の判断ツリーに従う。
+
+1. **テストはキーボードショートカット（Ctrl+K、Ctrl+, など）を使用するか？**
+- はい -> `@interactive` タグを付ける
+- いいえ -> 次へ
+
+2. **テストはフォーカス依存の動作（ショートカットエンジン、vim モード）に依存するか？**
+- はい -> `@interactive` タグを付ける
+- いいえ -> CI セーフ、タグ不要
+
+3. **共有ユーティリティは `helpers.ts` に置く** -- ページオブジェクトパターン、共通セットアップ、待機ヘルパー。
+
+## まとめ
+
+この分割戦略は実用的である。**CI で実行できるものは CI で、できないものはローカルで実行する。** `@interactive` タグは、特別な Playwright プラグインや設定を必要としないシンプルな grep ベースのフィルターである。CI をグリーンに保ちつつ、キーボード駆動機能の徹底的なローカルテストを可能にする。

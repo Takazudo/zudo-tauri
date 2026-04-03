@@ -1,0 +1,250 @@
+---
+title: 設定バリデーションパターン
+description: 型、範囲、列挙を強制しレガシーフィールド名を移行する共有 TypeScript バリデーション層
+sidebar_position: 8
+---
+
+# 設定バリデーションパターン
+
+デスクトップアプリは時間とともに設定が蓄積される。フィールド名が変更され、値の範囲が変わり、古い形式の移行が必要になる。共有 `app-defaults` パッケージの `validateSettings()` 関数は、すべてのコンシューマーが設定を通す単一のバリデーション境界を提供する。
+
+## 問題
+
+設定はディスク（ユーザーや古いアプリバージョンが編集した JSON ファイル）から取得される。以下が含まれる可能性がある。
+
+- **型の不一致** -- 数値が期待される場所に文字列
+- **範囲外の値** -- フォントサイズ 200、透明度 -1
+- **古いフィールド名** -- `general.theme` が `general.colorScheme` にリネーム
+- **欠落フィールド** -- 後のバージョンで追加された新しい設定
+- **無効な列挙値** -- `"block" | "underline" | "bar"` のみ有効なのに `cursorStyle: "triangle"`
+
+バリデーションなしでは、これらの問題がランタイムクラッシュやサイレントな誤動作を引き起こす。
+
+## 設定スキーマ
+
+`AppSettings` 型が完全な形状を定義する。
+
+```ts
+export interface AppSettings {
+  general: {
+    projectRoot: string;
+    colorScheme: string;
+    formatOnArchive: boolean;
+    windowOpacity: number;       // 0.3 - 1.0
+    useAiTitleSummarize: boolean;
+    displayScale: number;         // 離散ステップ: 0.75, 0.9, 1.0, ...
+  };
+  editor: {
+    vimMode: boolean;
+    fontFamily: string;
+    fontSize: number;             // 10-24
+    lineHeight: number;           // 1.0-2.0
+    // ...
+  };
+  terminal: {
+    fontSize: number;             // 10-24
+    cursorStyle: "block" | "underline" | "bar";
+    // ...
+  };
+  // ...他のセクション
+}
+```
+
+## validateSettings() 関数
+
+この関数は `unknown` 入力を受け取り、完全に型付けされた `AppSettings` または `null` を返す。
+
+### デフォルト付き型チェック
+
+各フィールドはデフォルト値へのフォールバック付きで個別にバリデーションされる。
+
+```ts
+editor: {
+  vimMode:
+    typeof s.editor?.vimMode === "boolean"
+      ? s.editor.vimMode
+      : defaultEditorSettings.vimMode,
+
+  fontSize:
+    typeof s.editor?.fontSize === "number" &&
+    s.editor.fontSize >= 10 &&
+    s.editor.fontSize <= 24
+      ? s.editor.fontSize
+      : defaultEditorSettings.fontSize,
+
+  lineHeight:
+    typeof s.editor?.lineHeight === "number" &&
+    s.editor.lineHeight >= 1.0 &&
+    s.editor.lineHeight <= 2.0
+      ? s.editor.lineHeight
+      : defaultEditorSettings.lineHeight,
+}
+```
+
+パターンは一貫している。型をチェック、範囲をチェック、無効なら デフォルトを使用。
+
+### 列挙バリデーション
+
+固定値セットを持つフィールドの場合：
+
+```ts
+cursorStyle: ["block", "underline", "bar"].includes(s.terminal?.cursorStyle)
+  ? s.terminal.cursorStyle
+  : defaultTerminalSettings.cursorStyle,
+
+terminalPosition: ["top", "right", "bottom", "left"].includes(s.layout?.terminalPosition)
+  ? s.layout.terminalPosition
+  : defaultLayoutSettings.terminalPosition,
+```
+
+### 16進カラーバリデーション
+
+カラー設定は正規表現でバリデーションされる。
+
+```ts
+const hexColorPattern = /^#[0-9a-fA-F]{6}$/;
+
+function validateHexColor(value: unknown, fallback: string): string {
+  return typeof value === "string" && hexColorPattern.test(value)
+    ? value
+    : fallback;
+}
+```
+
+### ディスプレイスケールのスナップ
+
+ディスプレイスケールは離散プリセットステップを使用する。無効な値は最も近い有効なステップにスナップされる。
+
+```ts
+function snapToNearestScale(value: unknown): number {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return defaultGeneralSettings.displayScale;
+  }
+  let closest = VALID_DISPLAY_SCALES[0];
+  let minDiff = Math.abs(value - closest);
+  for (const scale of VALID_DISPLAY_SCALES) {
+    const diff = Math.abs(value - scale);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closest = scale;
+    }
+  }
+  return closest;
+}
+```
+
+ユーザーが手動で設定ファイルを編集して `displayScale: 1.3` と書いた場合、`1.25`（最も近い有効なステップ）にスナップされる。
+
+## フィールドの移行
+
+バージョン間でフィールド名が変更された場合、バリデーターは古い名前を移行する。
+
+```ts
+// 移行: general.theme / general.colorSchema -> general.colorScheme
+const colorSchemeValue =
+  typeof s.general?.colorScheme === "string"
+    ? s.general.colorScheme
+    : typeof s.general?.colorSchema === "string"
+      ? s.general.colorSchema
+      : typeof s.general?.theme === "string"
+        ? s.general.theme
+        : defaultGeneralSettings.colorScheme;
+```
+
+これは優先順位順に3つの可能なフィールド名から読み取る。`colorScheme`（現在）、`colorSchema`（v1 のタイポ）、`theme`（元の名前）。
+
+その他の移行：
+
+```ts
+// shortcuts.navSkills -> shortcuts.navPins
+if (s.shortcuts?.navSkills && !s.shortcuts?.navPins) {
+  s.shortcuts.navPins = s.shortcuts.navSkills;
+}
+
+// activeTab -> activeDraft, tabCount -> draftCount
+if (s.activeTab !== undefined && s.activeDraft === undefined) {
+  s.activeDraft = s.activeTab;
+}
+
+// shortcuts.tab1-tab10 -> shortcuts.draft1-draft10
+for (let i = 1; i <= 10; i++) {
+  const oldKey = `tab${i}`;
+  const newKey = `draft${i}`;
+  if (s.shortcuts[oldKey] !== undefined && s.shortcuts[newKey] === undefined) {
+    s.shortcuts[newKey] = s.shortcuts[oldKey];
+  }
+}
+```
+
+<Note>
+
+移行はバリデーション前にチェックされる。つまり、アプリの過去のどのバージョンからの設定ファイルも正しくロードされる。古いフィールド名は現在の名前にマッピングされ、その後バリデーションされる。
+
+</Note>
+
+## ピンのバリデーション
+
+ピン（設定可能なコンテンツディレクトリ）は、ユーザーが設定 UI を通じて編集するため特別な処理が必要。部分的に入力されたエントリは破棄すべきではない。
+
+```ts
+const rawPins = Array.isArray(s.pins) ? s.pins : [];
+const validPins = rawPins
+  .filter((p) =>
+    p && typeof p.path === "string" && typeof p.title === "string"
+  )
+  .filter((p) =>
+    p.path.trim() !== "" || p.title.trim() !== ""  // いずれかのフィールドが非空なら保持
+  )
+  .map((p) => ({
+    path: p.path,
+    title: p.title,
+    ...(p.type === "file" || p.type === "directory" ? { type: p.type } : {}),
+  }));
+```
+
+これにより、部分的に編集されたエントリ（パスまたはタイトルのみ入力済み）は保持されるが、完全に空のものは削除される。
+
+## デフォルト値
+
+`defaults.ts` ファイルがすべての設定に対して適切なデフォルトを定義する。
+
+```ts
+export const defaultSettings: AppSettings = {
+  general: {
+    projectRoot: "",
+    colorScheme: "default-dark",
+    formatOnArchive: false,
+    windowOpacity: 1.0,
+    useAiTitleSummarize: false,
+    displayScale: 1.0,
+  },
+  editor: {
+    vimMode: true,
+    fontFamily: "JetBrains Mono",
+    fontSize: 14,
+    lineHeight: 1.6,
+    // ...
+  },
+  // ...
+};
+```
+
+これらのデフォルトは以下で使用される。
+
+1. **フィールドが欠落または無効な場合** -- バリデーターがデフォルトを返す
+2. **新しいワークスペースをスキャフォールドする場合** -- スキャフォールドがユーザーオーバーライドとデフォルトをマージする
+3. **モックアダプター内** -- モックバックエンドがデフォルト設定で起動する
+
+## バリデーションが実行される場所
+
+`validateSettings()` 関数は以下から呼び出される。
+
+- **Tauri フロントエンド** -- バックエンドから設定をロードした後、レンダリング前
+- **アプリスキャフォールド** -- 新しいワークスペースの `.zudotext.settings.json` を生成する際
+- **モックアダプター** -- インメモリ設定ストアを初期化する際
+
+この共有バリデーション層（`@takazudo/app-defaults` パッケージ内）により、どのコンシューマーが設定をロードしても一貫した動作が保証される。
+
+## まとめ
+
+バリデーションパターンは明確な構造に従う。**型をチェック、範囲をチェック、デフォルトを適用、古い名前を移行する。** これを共有パッケージに集中させることで、すべてのコンシューマーが同じ保証を得る。フィールドのリネームは、ロード時に透過的に行われるゼロコストの移行になり、手動編集や古いバージョンからの無効な値は、アプリをクラッシュさせるのではなくサイレントに修正される。
