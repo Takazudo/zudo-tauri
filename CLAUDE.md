@@ -25,7 +25,7 @@ pnpm b4push       # Pre-push validation (format + typecheck + build)
 
 ## Content Categories
 
-Each top-level directory under `src/content/docs/` maps to a header nav item via `categoryMatch` in `src/config/settings.ts`:
+Top-level directories under `src/content/docs/`. Directories with header nav entries are mapped via `categoryMatch` in `src/config/settings.ts`:
 
 - `getting-started/` - Overview, project setup, dev vs production mode
 - `architecture/` - Sidecar pattern, loading screen, process lifecycle
@@ -35,8 +35,11 @@ Each top-level directory under `src/content/docs/` maps to a header nav item via
 - `deployment/` - Build bundle, macOS pitfalls, cargo cache, node download
 - `recipes/` - Real-world app patterns (doc viewer, text editor, multi-config)
 - `claude/` - Claude Code integration docs
-- `claude-md/` - CLAUDE.md file documentation (auto-generated, `noPage: true`)
-- `claude-skills/` - Claude Skills documentation (auto-generated, `noPage: true`)
+
+Auto-generated directories (no header nav entry, managed by claude-resources integration):
+
+- `claude-md/` - CLAUDE.md file documentation (`noPage: true`)
+- `claude-skills/` - Claude Skills documentation (`noPage: true`)
 
 ## Writing Docs
 

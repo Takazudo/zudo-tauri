@@ -8,7 +8,7 @@ argument-hint: "[-u|--update] [topic keyword, e.g., 'configuration', 'sidebar', 
 # takazudo-zudo-tauri Documentation Reference
 
 Look up documentation from the takazudo-zudo-tauri project.
-Documentation base path: `/home/takazudo/repos/wisdom/zudo-tauri/src/content/docs`
+Documentation base path: `src/content/docs` (relative to repo root)
 
 ## Mode Detection
 
