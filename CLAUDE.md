@@ -199,6 +199,10 @@ Available globally in MDX without imports:
 - Noto Sans JP for body text
 - Headings use font-weight 400 (normal), not bold
 
+## Doc Skill (tauri-wisdom)
+
+The `tauri-wisdom` skill (`/.claude/skills/tauri-wisdom/SKILL.md`) is **generated** by `pnpm setup:doc-skill` (runs `scripts/setup-doc-skill.sh`). It is gitignored -- do NOT track it in git or edit it directly. To update the skill content, edit the generator script and re-run `pnpm setup:doc-skill`.
+
 ## Site Config
 
 - Base path: `/pj/zudo-tauri`
