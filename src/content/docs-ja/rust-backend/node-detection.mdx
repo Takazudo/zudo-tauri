@@ -1,0 +1,183 @@
+---
+title: バージョンマネージャー対応の Node 検出
+description: Finder から起動されたアプリで、バージョンマネージャー（nodenv, nvm, volta, fnm）を含むシステム Node.js を絶対パスで検出する方法
+sidebar_position: 7
+---
+
+# バージョンマネージャー対応の Node 検出
+
+Tauri アプリを Finder から起動すると、macOS は最小限の PATH（`/usr/bin:/bin:/usr/sbin:/sbin`）しか提供しません。バージョンマネージャーの shim（nodenv, nvm, volta, fnm）は `.zshrc` や `.bashrc` などのシェル初期化ファイルで設定されるため、Finder がこれらを source しない以上、PATH 上に存在しません。
+
+`find_node()` 関数は shim を完全にバイパスし、実際の Node.js バイナリを絶対パスで解決します。
+
+## 問題
+
+```rust
+// Finder から起動すると失敗する
+Command::new("node").arg("server.js").spawn();
+// Error: No such file or directory
+```
+
+`which node` も PATH に依存するため、同様に失敗します。
+
+## 検索順序
+
+`find_node()` は以下の優先順位で検索します：
+
+1. **直接パス** -- システムおよび Homebrew インストール
+2. **バージョンマネージャーパス** -- shim ではなく実際のバイナリを解決
+3. **フォールバック** -- `which node`（Finder からはほぼ機能しないが試す価値あり）
+
+```rust
+fn find_node() -> Option<std::path::PathBuf> {
+    let home = home_dir();
+
+    // 1. 直接パス（システム / Homebrew インストール）
+    let candidates = [
+        "/opt/homebrew/bin/node",
+        "/usr/local/bin/node",
+        "/usr/bin/node",
+    ];
+    for c in &candidates {
+        let path = std::path::PathBuf::from(c);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    // 2. バージョンマネージャー（後述）
+    // ...
+
+    // 3. フォールバック: `which node`
+    // ...
+    None
+}
+```
+
+## バージョンマネージャーの解決
+
+重要な知見：バージョンマネージャーは既知のディレクトリ構造に実際の Node.js バイナリを保存しています。シェル初期化なしでも、これらのディレクトリを直接スキャンすれば見つけられます。
+
+### 対応マネージャー
+
+| マネージャー | バージョンディレクトリ | 備考 |
+| --- | --- | --- |
+| anyenv/nodenv | `$HOME/.anyenv/envs/nodenv/versions/` | `version` ファイルでグローバル設定も確認 |
+| スタンドアロン nodenv | `$HOME/.nodenv/versions/` | anyenv と同じ構造 |
+| nvm | `$HOME/.nvm/versions/node/` | ディレクトリ名は `v20.11.0`（`v` プレフィックス付き） |
+| volta | `$HOME/.volta/tools/image/node/` | ディレクトリ名は `20.11.0`（プレフィックスなし） |
+| fnm | `$HOME/Library/Application Support/fnm/node-versions/` | モダンな場所。`$HOME/.fnm/node-versions/`（レガシー）も確認 |
+
+### 汎用バージョンディレクトリスキャナー
+
+すべてのバージョンマネージャーは共通パターンを持ちます：バージョン名のサブディレクトリを含むディレクトリで、各ディレクトリ内に `bin/node` があります。単一のヘルパーですべて対応できます：
+
+```rust
+fn find_node_in_versions_dir(dir: &str, label: &str) -> Option<std::path::PathBuf> {
+    let dir_path = std::path::PathBuf::from(dir);
+    if !dir_path.exists() {
+        return None;
+    }
+
+    // nodenv スタイル: ルートに `versions/` サブディレクトリと `version` ファイルがある
+    let versions_dir = if dir_path.join("versions").exists() {
+        // 設定されたグローバルバージョンの `version` ファイルを確認
+        if let Ok(ver) = fs::read_to_string(dir_path.join("version")) {
+            let ver = ver.trim();
+            let node_path = dir_path.join("versions").join(ver).join("bin").join("node");
+            if node_path.exists() {
+                return Some(node_path);
+            }
+        }
+        dir_path.join("versions")
+    } else {
+        dir_path
+    };
+
+    // スキャンして最新バージョンを選択（数値 semver ソート）
+    if let Ok(entries) = fs::read_dir(&versions_dir) {
+        let mut versions: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        versions.sort_by(|a, b| {
+            let parse = |s: &str| -> Vec<u64> {
+                s.strip_prefix('v').unwrap_or(s)
+                    .split('.')
+                    .filter_map(|p| p.parse().ok())
+                    .collect()
+            };
+            parse(a).cmp(&parse(b))
+        });
+        if let Some(ver) = versions.last() {
+            let node_path = versions_dir.join(ver).join("bin").join("node");
+            if node_path.exists() {
+                return Some(node_path);
+            }
+        }
+    }
+
+    None
+}
+```
+
+<Tip>
+
+数値 semver ソートは重要です。辞書順ソートでは `9.0.0` が `20.0.0` の後に来てしまいます。バージョンコンポーネントを整数としてパースすることで `20.x > 9.x` が正しく評価されます。
+
+</Tip>
+
+### nodenv の `version` ファイル
+
+nodenv（スタンドアロンおよび anyenv 経由の両方）は、ルートの `version` ファイルに設定されたグローバルバージョンを保存します：
+
+```
+# $HOME/.nodenv/version または $HOME/.anyenv/envs/nodenv/version
+20.11.0
+```
+
+スキャナーはまずこのファイルを確認し、設定バージョンが見つからない場合はインストール済みの最新バージョンにフォールバックします。
+
+## shim を使わない理由
+
+バージョンマネージャーの shim（例：`$HOME/.nodenv/shims/node`）はラッパースクリプトで：
+
+1. 設定ファイルを読んでターゲットバージョンを決定
+2. 実際のバイナリを実行
+
+これらの shim は PATH 上にあるためにシェル初期化が必要です。shim パスをハードコードしても、shim 自体が Finder 起動のコンテキストでは設定されていないシェル関数や環境変数に依存する場合があります。
+
+<Warning>
+
+常に shim ではなく**実際のバイナリ**（`versions/<ver>/bin/node`）を解決してください。shim は適切に初期化されたシェル外では動作しない可能性があります。
+
+</Warning>
+
+## テスト
+
+条件付きチェックでテストします — バージョンマネージャーは CI/開発マシンにインストールされているとは限りません：
+
+```rust
+#[test]
+fn find_node_detects_anyenv_nodenv() {
+    let home = home_dir();
+    let root = format!("{home}/.anyenv/envs/nodenv");
+    if PathBuf::from(&root).join("versions").exists() {
+        let result = find_node_in_versions_dir(&root, "nodenv");
+        assert!(result.is_some(), "should find node in anyenv/nodenv");
+        let path = result.unwrap();
+        assert!(path.exists(), "resolved node binary should exist");
+        assert_eq!(
+            path.file_name().unwrap().to_str().unwrap(),
+            "node",
+        );
+    }
+}
+```
+
+<Note>
+
+この関数は存在しないディレクトリに対して `None` を返すため、`find_node_in_versions_dir("/nonexistent", "test").is_none()` は安全なベースラインテストです。
+
+</Note>
