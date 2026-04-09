@@ -346,6 +346,12 @@ if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
 }
 ```
 
+<Note>
+
+`__TAURI_INTERNALS__` is an internal Tauri implementation detail. It has been stable in practice across Tauri v2 releases, but it is not part of the public API. If you need a more official check, Tauri's `@tauri-apps/api/core` package exposes `isTauri()` in v2.4+ as a proper public alternative.
+
+</Note>
+
 ### Full initialization component
 
 ```tsx
@@ -410,6 +416,7 @@ export default function FindInPageInit() {
 - **`useRef` for the find-in-page instance** -- the utility maintains internal state (match list, active index). Using `useRef` ensures one instance persists across re-renders without triggering unnecessary updates.
 - **`containerSelector` prop** -- scoping search to a specific element (e.g., `article.zd-content`) prevents matching text in the navigation, header, or find bar itself.
 - **Toggle behavior** -- Ctrl+F toggles the find bar open/closed rather than just opening it, so users can dismiss it with the same shortcut.
+- **No debounce by default** -- `handleFind` runs the full DOM tree walk on every keystroke. For most doc sites this is fast enough, but on very large pages (thousands of DOM nodes) you may want to add a debounce (e.g., 100–150ms) around the `findInPage.find()` call.
 
 ## CSS for match highlights
 
@@ -441,3 +448,7 @@ document.addEventListener("astro:before-swap", () => {
 ```
 
 The `astro:before-swap` event fires just before Astro replaces the page content, making it the right place to clean up. For other frameworks, use the equivalent navigation event (e.g., React Router's `useLocation` change, Next.js `routeChangeStart`).
+
+## Related
+
+- [Window Creation and Lifecycle](../rust-backend/window-management.mdx) -- covers `on_navigation` for opening external links in the OS browser, a related webview behavior that also needs custom handling

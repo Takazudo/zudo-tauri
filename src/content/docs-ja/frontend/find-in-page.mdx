@@ -342,9 +342,15 @@ Tauri はグローバルな `__TAURI_INTERNALS__` オブジェクトを WebView 
 
 ```typescript
 if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-  // Tauri WebView 内で実行中
+  // Running inside Tauri webview
 }
 ```
+
+<Note>
+
+`__TAURI_INTERNALS__` は Tauri の内部実装の詳細である。Tauri v2 のリリース間で事実上安定しているが、パブリック API の一部ではない。より公式なチェックが必要な場合は、Tauri v2.4+ の `@tauri-apps/api/core` パッケージが公式のパブリック代替として `isTauri()` を提供している。
+
+</Note>
 
 ### 完全な初期化コンポーネント
 
@@ -362,14 +368,14 @@ export default function FindInPageInit() {
   const [visible, setVisible] = useState(false);
   const findInPageRef = useRef(createFindInPage());
 
-  // Tauri 環境を検出
+  // Detect Tauri environment
   useEffect(() => {
     if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
       setIsTauri(true);
     }
   }, []);
 
-  // Tauri 内でのみ Cmd/Ctrl+F をインターセプト
+  // Intercept Cmd/Ctrl+F only in Tauri
   useEffect(() => {
     if (!isTauri) return;
     const handler = (e: KeyboardEvent) => {
@@ -382,7 +388,7 @@ export default function FindInPageInit() {
     return () => document.removeEventListener("keydown", handler);
   }, [isTauri]);
 
-  // Astro ページ遷移時にクリア
+  // Clear on Astro page navigation
   useEffect(() => {
     const handler = () => {
       findInPageRef.current.stop();
@@ -410,6 +416,7 @@ export default function FindInPageInit() {
 - **find-in-page インスタンスに `useRef`** -- ユーティリティは内部状態（マッチリスト、アクティブインデックス）を保持する。`useRef` を使用することで、不要な再レンダリングを引き起こさずに 1 つのインスタンスが再レンダリング間で永続化される。
 - **`containerSelector` prop** -- 検索を特定の要素（例：`article.zd-content`）にスコープすることで、ナビゲーション、ヘッダー、検索バー自体のテキストとのマッチを防止する。
 - **トグル動作** -- Ctrl+F は検索バーを開くだけでなく開閉をトグルするため、ユーザーは同じショートカットで閉じることもできる。
+- **デフォルトではデバウンスなし** -- `handleFind` はキーストロークごとに DOM ツリー走査全体を実行する。ほとんどのドキュメントサイトでは十分に高速だが、非常に大きなページ（数千の DOM ノード）では `findInPage.find()` の呼び出しにデバウンス（例：100〜150ms）を追加することを検討する。
 
 ## マッチハイライトの CSS
 
@@ -441,3 +448,7 @@ document.addEventListener("astro:before-swap", () => {
 ```
 
 `astro:before-swap` イベントは Astro がページコンテンツを置き換える直前に発火するため、クリーンアップに適切なタイミングである。他のフレームワークでは同等のナビゲーションイベント（例：React Router の `useLocation` 変更、Next.js の `routeChangeStart`）を使用する。
+
+## 関連ページ
+
+- [ウィンドウの作成とライフサイクル](../rust-backend/window-management.mdx) -- OS ブラウザで外部リンクを開くための `on_navigation` について説明している。同様にカスタム対応が必要な WebView の動作である
