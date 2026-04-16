@@ -21,6 +21,23 @@ This runs the full pipeline:
 3. Embeds the `frontendDist` directory into the binary
 4. Creates the `.app` bundle
 
+<Warning>
+
+**`beforeBuildCommand` must be configured** in `tauri.conf.json` for self-contained apps that embed a frontend (Vite, etc.). Without it, `cargo tauri build` bundles whatever stale files are already in `frontendDist` without rebuilding them. The build succeeds silently but ships old frontend code.
+
+```json
+{
+  "build": {
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  }
+}
+```
+
+If `beforeBuildCommand` is missing, the build may finish suspiciously fast (a few seconds instead of 30+), because Cargo has nothing new to compile.
+
+</Warning>
+
 The output is located at:
 
 ```
@@ -101,42 +118,25 @@ The icon path is relative to `tauri.conf.json`. Keep your icon source file in a 
 After building, install the `.app` bundle to `/Applications`:
 
 ```bash
-# IMPORTANT: Remove old version first (see macOS Pitfalls)
-rm -rf /Applications/YourApp.app
-
-# Copy the new bundle
-cp -r target/release/bundle/macos/YourApp.app /Applications/
-
-# Clear quarantine flag (app is not signed)
-xattr -cr /Applications/YourApp.app
-```
-
-### Clearing Quarantine
-
-macOS marks downloaded and copied applications with a quarantine flag. For unsigned apps (typical during development), you need to clear this:
-
-```bash
-xattr -cr /Applications/YourApp.app
-```
-
-The `-c` flag clears all extended attributes and `-r` applies recursively. Without this, macOS may refuse to open the app or show a "damaged" warning.
-
-<Note>
-
-The quarantine flag is re-applied every time you copy the `.app` bundle. You need to run `xattr -cr` after each fresh install.
-
-</Note>
-
-### Kill Before Replace
-
-If the app is currently running, kill it before replacing:
-
-```bash
+# 1. Kill the running app (if any)
 killall YourApp 2>/dev/null || true
-rm -rf /Applications/YourApp.app
-cp -r target/release/bundle/macos/YourApp.app /Applications/
-xattr -cr /Applications/YourApp.app
+sleep 1
+
+# 2. Move old bundle away (mv is atomic -- see macOS Pitfalls)
+mv /Applications/YourApp.app /tmp/YourApp-old-$$.app 2>/dev/null || true
+
+# 3. Copy the fresh bundle
+cp -R target/release/bundle/macos/YourApp.app /Applications/
+
+# 4. Clear quarantine (targeted: only removes quarantine, not all xattrs)
+xattr -dr com.apple.quarantine /Applications/YourApp.app
 ```
+
+<Warning>
+
+**Never use `cp -rf` to overwrite an existing `.app` bundle.** The binary inside `Contents/MacOS/` may stay stale. Always remove (or move) the old bundle first. See [macOS Deployment Pitfalls](./macos-pitfalls.mdx) for the full explanation.
+
+</Warning>
 
 ## Building with Alternative Configs
 

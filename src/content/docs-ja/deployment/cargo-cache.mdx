@@ -8,6 +8,10 @@ sidebar_position: 4
 
 Cargo はインクリメンタルコンパイルに優れており、変更されたもののみを再コンパイルする。しかし、この賢さが Tauri のフロントエンドアセット埋め込みに関しては裏目に出ることがある。Cargo が `frontendDist` 内のファイルの変更を検出できず、古いフロントエンドコードが含まれた本番ビルドが生成される場合がある。
 
+## 前提条件: beforeBuildCommand
+
+この記事は `tauri.conf.json` に `beforeBuildCommand` が設定されており、`cargo tauri build` が Rust コンパイル前にフロントエンドを実際にリビルドすることを前提としている。`beforeBuildCommand` が未設定の場合、問題は Cargo キャッシュではなく、そもそもフロントエンドがリビルドされていないことにある。設定の詳細は[アプリバンドルのビルド](./build-bundle.mdx)を参照。
+
 ## 問題
 
 `cargo tauri build` を実行すると、まずフロントエンドビルド（`beforeBuildCommand`）が実行され、`frontendDist` に新しいファイルが生成される。次に Cargo が Rust コードをコンパイルし、`tauri::generate_context!()` を呼び出してそれらのファイルを埋め込む。
@@ -42,7 +46,9 @@ fn main() {
 
 <Tip>
 
-これは根本原因を修正する唯一の解決策である。以下の他の解決策はすべて、各ビルドの前に手動操作が必要な回避策である。`build.rs` に `rerun-if-changed` を追加すれば、以降のセクションはスキップできる。
+これは根本原因を修正する主要な解決策である。ほとんどの場合、`rerun-if-changed` の追加で十分であり、以下の回避策はスキップできる。
+
+ただし、`rerun-if-changed` は**ディレクトリエントリ**を監視する。Cargo の変更検出がトリガーされない場合（ディレクトリの mtime が変わっていない、またはインクリメンタルコンパイルが再リンク不要と判断した場合など）、フォールバックとして `cargo clean -p` が必要になることがある。フロントエンド変更後にビルドが 5 秒未満で完了した場合、Cargo が再コンパイルをスキップした可能性が高い。
 
 </Tip>
 
@@ -66,8 +72,8 @@ cargo tauri build
 確実な解決策は、自分のクレートのビルド成果物のみをクリーンし、新規コンパイルを強制することである。
 
 ```bash
-# Clean only your crate (fast, doesn't rebuild all dependencies)
-cargo clean -p your-crate-name
+# Clean only your crate's release artifacts (fast, doesn't rebuild all dependencies)
+cargo clean -p your-crate-name --release
 
 # Then build
 cargo tauri build
@@ -75,9 +81,11 @@ cargo tauri build
 
 `your-crate-name` を `Cargo.toml` の `name` フィールドの値に置き換えること。すべての依存関係ではなく、自分のクレートの成果物のみを削除するため、`cargo clean` よりもはるかに高速である。
 
+`--release` フラグが重要である。これがないと `cargo clean -p` は debug 成果物のみをクリーンし、`cargo tauri build` が使用する release ビルドはクリーンされない。
+
 ```bash
 # Example for a crate named "zudotext"
-cargo clean -p zudotext
+cargo clean -p zudotext --release
 cargo tauri build
 ```
 

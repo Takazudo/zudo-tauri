@@ -8,6 +8,10 @@ sidebar_position: 4
 
 Cargo is smart about incremental compilation -- it only recompiles what has changed. But this intelligence sometimes works against you when it comes to Tauri's frontend asset embedding. Cargo may not detect that the files in `frontendDist` have changed, resulting in a production build that ships stale frontend code.
 
+## Prerequisite: beforeBuildCommand
+
+This article assumes `beforeBuildCommand` is configured in `tauri.conf.json` so that `cargo tauri build` actually rebuilds the frontend before compiling Rust. If `beforeBuildCommand` is missing, the problem is not Cargo cache -- it is that the frontend was never rebuilt in the first place. See [Building App Bundles](./build-bundle.mdx) for configuration details.
+
 ## The Problem
 
 When you run `cargo tauri build`, the frontend build runs first (`beforeBuildCommand`), producing new files in `frontendDist`. Then Cargo compiles the Rust code, which calls `tauri::generate_context!()` to embed those files.
@@ -42,7 +46,9 @@ Adjust the path (`../dist`, `../dist-renderer`, etc.) to match your actual `fron
 
 <Tip>
 
-This is the only solution that fixes the root cause. All other solutions below are workarounds that require manual action before each build. If you add `rerun-if-changed` to `build.rs`, you can skip the rest of this section.
+This is the primary solution that fixes the root cause. In most cases, adding `rerun-if-changed` is sufficient and you can skip the workarounds below.
+
+However, `rerun-if-changed` monitors the **directory entry** -- if Cargo's change detection does not trigger (e.g., directory mtime is unchanged, or incremental compilation decides nothing needs relinking), you may still need `cargo clean -p` as a fallback. If your build finishes in under 5 seconds after frontend changes, Cargo likely skipped recompilation.
 
 </Tip>
 
@@ -66,8 +72,8 @@ cargo tauri build
 The reliable solution is to clean only your crate's build artifacts, forcing a fresh compilation:
 
 ```bash
-# Clean only your crate (fast, doesn't rebuild all dependencies)
-cargo clean -p your-crate-name
+# Clean only your crate's release artifacts (fast, doesn't rebuild all dependencies)
+cargo clean -p your-crate-name --release
 
 # Then build
 cargo tauri build
@@ -75,9 +81,11 @@ cargo tauri build
 
 Replace `your-crate-name` with the `name` field from your `Cargo.toml`. This is much faster than `cargo clean` because it only removes your crate's artifacts, not all dependencies.
 
+The `--release` flag is important -- without it, `cargo clean -p` only cleans debug artifacts, not the release build used by `cargo tauri build`.
+
 ```bash
 # Example for a crate named "zudotext"
-cargo clean -p zudotext
+cargo clean -p zudotext --release
 cargo tauri build
 ```
 

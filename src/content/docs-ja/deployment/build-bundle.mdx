@@ -21,6 +21,23 @@ cargo tauri build
 3. `frontendDist` ディレクトリをバイナリに埋め込み
 4. `.app` バンドルを作成
 
+<Warning>
+
+**`beforeBuildCommand` の設定が必須**。フロントエンド（Vite 等）を埋め込む自己完結型アプリでは、`tauri.conf.json` に `beforeBuildCommand` を設定する必要がある。設定がない場合、`cargo tauri build` は `frontendDist` にある古いファイルをリビルドせずにそのままバンドルしてしまう。ビルドはエラーなく成功するが、古いフロントエンドコードが含まれる。
+
+```json
+{
+  "build": {
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  }
+}
+```
+
+`beforeBuildCommand` が未設定の場合、ビルドが不自然に高速（30 秒以上かかるべきところが数秒）で完了することがある。これは Cargo がコンパイルすべきものがないと判断したためである。
+
+</Warning>
+
 出力は以下の場所に生成される。
 
 ```
@@ -101,42 +118,25 @@ Tauri は `bundle.icon` 配列で指定されたアイコンを参照する。
 ビルド後、`.app` バンドルを `/Applications` にインストールする。
 
 ```bash
-# IMPORTANT: Remove old version first (see macOS Pitfalls)
-rm -rf /Applications/YourApp.app
-
-# Copy the new bundle
-cp -r target/release/bundle/macos/YourApp.app /Applications/
-
-# Clear quarantine flag (app is not signed)
-xattr -cr /Applications/YourApp.app
-```
-
-### 検疫フラグのクリア
-
-macOS はダウンロードおよびコピーされたアプリケーションに検疫フラグを付与する。署名されていないアプリ（開発時に典型的）の場合、このフラグをクリアする必要がある。
-
-```bash
-xattr -cr /Applications/YourApp.app
-```
-
-`-c` フラグはすべての拡張属性をクリアし、`-r` は再帰的に適用する。これがないと、macOS がアプリの起動を拒否したり、「破損している」という警告を表示することがある。
-
-<Note>
-
-検疫フラグは `.app` バンドルをコピーするたびに再付与される。新規インストールのたびに `xattr -cr` を実行する必要がある。
-
-</Note>
-
-### 置き換え前にプロセスを終了
-
-アプリが現在実行中の場合は、置き換え前にプロセスを終了させる。
-
-```bash
+# 1. 実行中のアプリを終了（もしあれば）
 killall YourApp 2>/dev/null || true
-rm -rf /Applications/YourApp.app
-cp -r target/release/bundle/macos/YourApp.app /Applications/
-xattr -cr /Applications/YourApp.app
+sleep 1
+
+# 2. 古いバンドルを退避（mv はアトミック -- macOS Pitfalls 参照）
+mv /Applications/YourApp.app /tmp/YourApp-old-$$.app 2>/dev/null || true
+
+# 3. 新しいバンドルをコピー
+cp -R target/release/bundle/macos/YourApp.app /Applications/
+
+# 4. 検疫フラグをクリア（対象を限定: 検疫属性のみ削除）
+xattr -dr com.apple.quarantine /Applications/YourApp.app
 ```
+
+<Warning>
+
+**既存の `.app` バンドルに `cp -rf` で上書きしてはならない。** `Contents/MacOS/` 内のバイナリが更新されない場合がある。必ず古いバンドルを先に削除（または移動）すること。詳細は [macOS デプロイの注意点](./macos-pitfalls.mdx) を参照。
+
+</Warning>
 
 ## 代替設定でのビルド
 
