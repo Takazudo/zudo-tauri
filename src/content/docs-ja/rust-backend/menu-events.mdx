@@ -262,3 +262,7 @@ pub fn register_menu_handler(app: &tauri::App) {
 4. **定義済み項目は `on_menu_event` をトリガーしない** -- カスタム `MenuItemBuilder::with_id` 項目のみがトリガーする
 5. **タイムアウトには `Instant` を使用する** -- 単調クロックであり、システム時刻の変更に影響されない
 6. **作成と処理を分離する** -- `create_menu` と `register_menu_handler` を別々の関数として保持する
+
+## 関連
+
+- [macOS ウィンドウタイリングショートカット](./macos-window-tiling.mdx) -- Window サブメニューがある場合、macOS のタイリングを動作させるために `set_as_windows_menu_for_nsapp()` で登録する必要がある

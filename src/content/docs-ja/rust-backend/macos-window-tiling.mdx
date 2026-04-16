@@ -1,0 +1,116 @@
+---
+title: macOSウィンドウタイリングショートカット
+description: muda メニューライブラリのバグにより、Tauriアプリで macOS システムのウィンドウタイリングショートカット（左半分/右半分/上半分/下半分にタイル表示）が動作しない問題の修正方法。
+sidebar_position: 9
+---
+
+## 問題
+
+macOS システムのウィンドウタイリングショートカットが Tauri アプリで動作しない。システム環境設定 > キーボード > ショートカット > ウィンドウ で設定されるこれらのショートカット（左半分にタイル表示、右半分にタイル表示など）は、Electron アプリ（Obsidian、Discord、Slack）やネイティブ macOS アプリでは正常に動作するが、Tauri アプリでは無視される。
+
+macOS 15+（Sequoia）では、標準のタイリングショートカットは `Fn+Control+矢印キー`。システム環境設定で設定するカスタムショートカットは別のキーコンビネーション（例：`⌃⌘J`、`⌃⌘;`）を使用する。
+
+<Note>
+
+BetterTouchTool のウィンドウリサイズは Tauri アプリでも動作する。これはアクセシビリティ API を使用しており、システムのタイリングショートカットとはまったく異なるメカニズムであるため。システムタイリング機能は、AppKit レベルで登録された **Window メニュー** を必要とする。
+
+</Note>
+
+## 根本原因
+
+macOS は `[NSApp setWindowsMenu:]` で「ウィンドウメニュー」として登録された `NSMenu` にタイリングメニュー項目を挿入する。メニューが登録されていなければ、システムにはタイリング項目を挿入する場所がなく、ショートカットは何も起きない。
+
+2つの問題があった：
+
+1. **muda のバグ（v0.17.1）**: `set_as_windows_menu_for_nsapp()` メソッドが、実際に表示されている `NSMenu` ではなく、内部テンプレートの `NSMenu` を `[NSApp setWindowsMenu:]` に渡していた。呼び出しても、間違ったメニューが登録されていた。[muda v0.17.2](https://github.com/tauri-apps/muda/pull/335) で修正された。
+
+2. **呼び出しの欠落**: アプリコードが Window サブメニューに対して `set_as_windows_menu_for_nsapp()` を呼び出していなかったため、macOS はどのメニューが Window メニューなのか認識できなかった。
+
+### Electron が動作する理由
+
+Electron はメニューに `role == "window"` が設定されている場合、実際に表示されている `NSMenu` を渡して `[NSApp setWindowsMenu:submenu]` を明示的に呼び出す。これが Electron アプリでタイリングが「そのまま動く」理由である。
+
+## 修正方法
+
+2つのステップが必要：
+
+### ステップ1: muda を v0.17.2+ にアップデート
+
+```bash
+cargo update -p muda
+```
+
+`Cargo.lock` でバージョンを確認：
+
+```
+[[package]]
+name = "muda"
+version = "0.17.2"
+```
+
+### ステップ2: Window メニューを登録する
+
+`create_menu` 関数から Window サブメニューを返し、メニュー設定後に `set_as_windows_menu_for_nsapp()` を呼び出す：
+
+```rust
+// menu.rs
+pub fn create_menu(
+    app: &tauri::App,
+) -> tauri::Result<(Menu<tauri::Wry>, Submenu<tauri::Wry>)> {
+    let handle = app.handle();
+    let menu = Menu::new(handle)?;
+
+    // ... App, File, Edit, View メニューを構築 ...
+
+    // Window メニュー
+    let window_menu = Submenu::new(handle, "Window", true)?;
+    window_menu.append(&PredefinedMenuItem::minimize(handle, None)?)?;
+    window_menu.append(&PredefinedMenuItem::maximize(handle, None)?)?;
+    window_menu.append(&PredefinedMenuItem::separator(handle)?)?;
+    #[cfg(target_os = "macos")]
+    {
+        window_menu.append(
+            &PredefinedMenuItem::show_all(handle, None)?,
+        )?;
+    }
+    menu.append(&window_menu)?;
+
+    // フルメニューと Window サブメニューの両方を返す
+    Ok((menu, window_menu))
+}
+```
+
+```rust
+// main.rs — setup() 内
+let (menu, window_menu) = native::menu::create_menu(app)?;
+app.set_menu(menu)?;
+
+#[cfg(target_os = "macos")]
+window_menu.set_as_windows_menu_for_nsapp()?;
+
+native::menu::register_menu_handler(app);
+```
+
+<Warning>
+
+`set_as_windows_menu_for_nsapp()` の呼び出しは `app.set_menu(menu)` の **後** でなければならない。メニューがアプリに設定される前に呼び出すと、NSMenu の参照がメニューバーに接続されていない可能性がある。
+
+</Warning>
+
+## 修正の検証
+
+アプリをビルドしてインストールした後：
+
+1. システム環境設定 > キーボード > キーボードショートカット > アプリショートカット（Sequoia ではウィンドウ管理）を開く
+2. タイリングショートカットが有効であることを確認
+3. Tauri アプリのウィンドウにフォーカスする
+4. タイリングショートカットを押す（例：Sequoia では `Fn+Control+左矢印`、またはカスタムショートカット）
+5. ウィンドウが画面の対応する半分/4分の1にスナップされるはず
+
+## 参考リンク
+
+- [muda #263](https://github.com/tauri-apps/muda/issues/263) — オリジナルのバグ報告（クローズ済み、v0.17.2 で修正）
+- [muda #335](https://github.com/tauri-apps/muda/pull/335) — 修正 PR（2026年4月マージ）
+- [Tauri #13605](https://github.com/tauri-apps/tauri/issues/13605) — 下流の issue 報告
+- [muda #262](https://github.com/tauri-apps/muda/issues/262) — Sequoia タイリングアイコン（別件、未解決）
+- [winit #3986](https://github.com/rust-windowing/winit/issues/3986) — winit ベースのアプリでの同じ根本原因

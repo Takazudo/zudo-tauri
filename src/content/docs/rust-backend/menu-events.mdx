@@ -262,3 +262,7 @@ Call both from `setup()`:
 4. **Predefined items do not trigger `on_menu_event`** -- only custom `MenuItemBuilder::with_id` items do
 5. **Use `Instant` for timeouts** -- monotonic clock, not affected by system time changes
 6. **Separate creation from handling** -- keep `create_menu` and `register_menu_handler` as distinct functions
+
+## Related
+
+- [macOS Window Tiling Shortcuts](./macos-window-tiling.mdx) -- if you have a Window submenu, you must register it with `set_as_windows_menu_for_nsapp()` for macOS tiling to work
