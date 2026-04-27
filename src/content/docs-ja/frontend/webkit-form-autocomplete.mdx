@@ -18,6 +18,12 @@ Tauri アプリは WKWebView 内で動く Web アプリである。`<form>` や 
 
 </Note>
 
+<Info>
+
+**プラットフォームの範囲。** この記事は macOS の Tauri アプリ -- 組み込みエンジンが WKWebView の場合 -- を対象としている。Windows のエンジンは WebView2（Chromium）、Linux のエンジンは WebKitGTK であり、それぞれ独自の自動補完機構を持っていて、挙動・デフォルト・無効化のノブが異なる。本記事で扱う HTML 属性（`autocomplete`、`autocorrect`、`autocapitalize`、`spellcheck`）は標準仕様であり広く移植可能であるが、以下で触れる WebKit 固有の癖 -- 特に `autocomplete="off"` がソフトなヒントとして扱われる点 -- は macOS / iOS の WKWebView 経路に固有の話である。
+
+</Info>
+
 ## このバブルの正体
 
 バブルは WebKit の **入力欄ごとの値履歴** である：同じフィールドに対して過去に入力された値を、オリジン（および WKWebView のデータストア）単位で保持している。以下のものでは **ない**：

@@ -18,6 +18,12 @@ Tauri apps are web apps inside WKWebView. Anything Safari does to a `<form>` or 
 
 </Note>
 
+<Info>
+
+**Platform scope.** This article is about macOS Tauri apps, where the embedded engine is WKWebView. On Windows the engine is WebView2 (Chromium) and on Linux it is WebKitGTK; both have their own autofill mechanisms with different behavior, defaults, and disable knobs. The HTML attributes covered here (`autocomplete`, `autocorrect`, `autocapitalize`, `spellcheck`) are standard and broadly portable, but the WebKit-specific quirks below -- particularly the way `autocomplete="off"` is treated as a soft hint -- apply to the macOS / iOS WKWebView path.
+
+</Info>
+
 ## What the pill actually is
 
 The pill is WebKit's **per-input value history**: previously entered values for the same field, scoped to the origin (and, in WKWebView, the webview's data store). It is **not**:
